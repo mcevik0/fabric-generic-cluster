@@ -1,0 +1,14 @@
+include README.md
+include LICENSE
+include requirements.txt
+include pyproject.toml
+
+recursive-include fabric_generic_cluster *.py
+recursive-include docs *.md
+recursive-include examples *.py
+recursive-include model *.yaml
+
+exclude .gitignore
+recursive-exclude tests *
+recursive-exclude notebooks *
+recursive-exclude scripts *

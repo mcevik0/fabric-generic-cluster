@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backup files
+*.bak
+*.backup
+*.tmp
+
+# Logs
+*.log
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# FABRIC credentials (if any)
+fabric_config.yml
+*.pem
+*.key
+
+# Local testing
+test_output/
+*.test.yaml
