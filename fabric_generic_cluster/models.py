@@ -194,6 +194,11 @@ class OpenStackRoles(BaseModel):
 class NodeSpecific(BaseModel):
     """Application-specific node configuration."""
     openstack: OpenStackRoles = Field(default_factory=OpenStackRoles)
+    postboot: Optional[str] = Field(default=None, description="Post-boot commands to execute")
+    
+    def has_postboot_commands(self) -> bool:
+        """Check if postboot commands are defined and non-empty."""
+        return bool(self.postboot and self.postboot.strip())
 
 
 class Node(BaseModel):
@@ -201,6 +206,7 @@ class Node(BaseModel):
     name: str
     hostname: str
     site: str
+    worker: Optional[str] = Field(default=None, description="Specific worker host for node placement")
     capacity: NodeCapacity
     pci: PCIDevices = Field(default_factory=PCIDevices)
     persistent_storage: PersistentStorage = Field(default_factory=PersistentStorage)
@@ -271,6 +277,49 @@ class Node(BaseModel):
                 results.append((fpga_name, iface_name, iface))
         
         return results
+    
+    def has_worker_constraint(self) -> bool:
+        """Check if this node has a specific worker host constraint."""
+        return bool(self.worker and self.worker.strip())
+
+
+# ============================================================================
+# Facility Port Models
+# ============================================================================
+
+class FacilityPort(BaseModel):
+    """Facility port configuration for external connectivity."""
+    name: str = Field(description="Facility port name (e.g., 'SENSE-MGHPCC')")
+    site: str = Field(description="FABRIC site where facility port is located")
+    vlan: int = Field(description="VLAN ID for the facility port")
+    binding: str = Field(description="Network name this facility port connects to")
+    
+    @validator('vlan')
+    def validate_vlan(cls, v):
+        """Validate VLAN is in valid range."""
+        if not (1 <= v <= 4094):
+            raise ValueError(f"VLAN must be between 1 and 4094, got: {v}")
+        return v
+
+
+class SiteTopologyFacilityPorts(BaseModel):
+    """Collection of facility ports in the topology."""
+    facility_ports: Dict[str, FacilityPort] = Field(default_factory=dict)
+    
+    def iter_facility_ports(self):
+        """Iterate over all facility ports."""
+        return self.facility_ports.values()
+    
+    def get_facility_port_by_name(self, name: str) -> Optional[FacilityPort]:
+        """Find facility port by name."""
+        for fp in self.facility_ports.values():
+            if fp.name == name:
+                return fp
+        return None
+    
+    def get_facility_ports_for_network(self, network_name: str) -> list[FacilityPort]:
+        """Get all facility ports bound to a specific network."""
+        return [fp for fp in self.facility_ports.values() if fp.binding == network_name]
 
 
 # ============================================================================
@@ -386,6 +435,10 @@ class SiteTopology(BaseModel):
     """Complete site topology configuration."""
     site_topology_nodes: SiteTopologyNodes
     site_topology_networks: SiteTopologyNetworks
+    site_topology_facility_ports: Optional[SiteTopologyFacilityPorts] = Field(
+        default_factory=SiteTopologyFacilityPorts,
+        description="Facility ports for external connectivity"
+    )
     
     @classmethod
     def from_yaml_dict(cls, data: dict) -> "SiteTopology":
@@ -411,6 +464,19 @@ class SiteTopology(BaseModel):
     def get_network_by_name(self, name: str) -> Optional[Network]:
         """Find network by name."""
         return self.site_topology_networks.get_network_by_name(name)
+    
+    def get_facility_ports_for_network(self, network_name: str) -> list[FacilityPort]:
+        """Get all facility ports connected to a specific network."""
+        if self.site_topology_facility_ports:
+            return self.site_topology_facility_ports.get_facility_ports_for_network(network_name)
+        return []
+    
+    def has_facility_ports(self) -> bool:
+        """Check if topology has any facility ports defined."""
+        return (
+            self.site_topology_facility_ports is not None and 
+            len(self.site_topology_facility_ports.facility_ports) > 0
+        )
 
 
 # ============================================================================

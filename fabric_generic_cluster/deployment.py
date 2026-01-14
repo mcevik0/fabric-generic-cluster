@@ -9,7 +9,7 @@ from typing import Optional
 from datetime import datetime
 
 from fabrictestbed_extensions.fablib.fablib import FablibManager as fablib
-from .models import SiteTopology, Node, NIC, DPU, FPGA, GPU, NVMe, PersistentVolume
+from .models import SiteTopology, Node, NIC, DPU, FPGA, GPU, NVMe, PersistentVolume, FacilityPort
 
 logger = logging.getLogger(__name__)
 
@@ -150,18 +150,84 @@ def add_persistent_storage_to_node(fab_node, node: Node) -> None:
             logger.warning(f"Failed to add storage {volume.name} to {node.hostname}: {e}")
 
 
-def create_and_bind_networks(topology: SiteTopology, slice) -> dict:
+def add_postboot_commands_to_node(fab_node, node: Node) -> None:
     """
-    Create FABRIC networks and bind node interfaces to them.
-    Handles NIC, DPU, and FPGA interfaces.
+    Add post-boot commands to a FABRIC node if specified in topology.
+    
+    Args:
+        fab_node: FABRIC node object
+        node: Node model with potential postboot commands
+    """
+    if node.specific.has_postboot_commands():
+        try:
+            postboot_cmd = node.specific.postboot.strip()
+            fab_node.add_post_boot_execute(command=postboot_cmd)
+            logger.info(f"Added post-boot command to {node.hostname}")
+            logger.debug(f"Post-boot command: {postboot_cmd}")
+            print(f"   🔧 Added post-boot commands to {node.hostname}")
+        except Exception as e:
+            logger.warning(f"Failed to add post-boot command to {node.hostname}: {e}")
+            print(f"   ⚠️ Failed to add post-boot command to {node.hostname}: {e}")
+
+
+def add_facility_ports_to_slice(topology: SiteTopology, slice) -> dict:
+    """
+    Add facility ports to the slice.
     
     Args:
         topology: Site topology model
         slice: FABRIC slice object
         
     Returns:
+        Dictionary mapping facility port names to FABRIC facility port objects
+    """
+    facility_port_objects = {}
+    
+    if not topology.has_facility_ports():
+        logger.debug("No facility ports defined in topology")
+        return facility_port_objects
+    
+    logger.info("Adding facility ports to slice")
+    print("\n🔌 Adding facility ports...\n")
+    
+    for fp_id, fp in topology.site_topology_facility_ports.facility_ports.items():
+        try:
+            logger.info(f"Adding facility port: {fp.name} at {fp.site} (VLAN {fp.vlan})")
+            print(f"   🔌 {fp.name} @ {fp.site} - VLAN {fp.vlan} → {fp.binding}")
+            
+            fab_fp = slice.add_facility_port(
+                name=fp.name,
+                site=fp.site,
+                vlan=str(fp.vlan)
+            )
+            
+            facility_port_objects[fp.name] = fab_fp
+            logger.info(f"Successfully added facility port: {fp.name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to add facility port {fp.name}: {e}")
+            print(f"   ❌ Failed to add facility port {fp.name}: {e}")
+            continue
+    
+    return facility_port_objects
+
+
+def create_and_bind_networks(topology: SiteTopology, slice, facility_port_objects: dict = None) -> dict:
+    """
+    Create FABRIC networks and bind node interfaces and facility ports to them.
+    Handles NIC, DPU, FPGA interfaces, and facility ports.
+    
+    Args:
+        topology: Site topology model
+        slice: FABRIC slice object
+        facility_port_objects: Dictionary of facility port objects (optional)
+        
+    Returns:
         Dictionary mapping network names to FABRIC network objects
     """
+    if facility_port_objects is None:
+        facility_port_objects = {}
+    
     network_objects = {}
     
     # Create networks
@@ -187,7 +253,36 @@ def create_and_bind_networks(topology: SiteTopology, slice) -> dict:
             logger.error(f"Failed to create network {network.name}: {e}")
             continue
     
-    # Bind NIC interfaces to networks
+    # Bind facility port interfaces to networks
+    if topology.has_facility_ports():
+        logger.info("Binding facility port interfaces to networks")
+        
+        for fp_id, fp in topology.site_topology_facility_ports.facility_ports.items():
+            if fp.name not in facility_port_objects:
+                logger.warning(f"Facility port {fp.name} not found in facility_port_objects")
+                continue
+            
+            if fp.binding not in network_objects:
+                logger.warning(f"Network '{fp.binding}' not found for facility port {fp.name}")
+                continue
+            
+            try:
+                fab_fp = facility_port_objects[fp.name]
+                fp_interfaces = fab_fp.get_interfaces()
+                
+                if fp_interfaces:
+                    network_objects[fp.binding].add_interface(fp_interfaces[0])
+                    logger.info(f"Connected facility port {fp.name} to network {fp.binding}")
+                    print(f"   ✅ Connected facility port {fp.name} to {fp.binding}")
+                else:
+                    logger.warning(f"No interfaces found for facility port {fp.name}")
+                    print(f"   ⚠️ No interfaces found for facility port {fp.name}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to bind facility port {fp.name} to network {fp.binding}: {e}")
+                print(f"   ❌ Failed to bind facility port {fp.name}: {e}")
+    
+    # Bind node NIC interfaces to networks
     for node_id, node in topology.site_topology_nodes.nodes.items():
         try:
             fab_node = slice.get_node(name=node.hostname)
@@ -313,7 +408,7 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
                 
                 if not available_ips:
                     logger.warning(f"No available IPs for network {network_name}")
-                    print(f"   ⚠️  No available IPs for {network_name}")
+                    print(f"   ⚠️ No available IPs for {network_name}")
                     continue
                 
                 # Get the subnet for this network
@@ -357,7 +452,7 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
                 # For IPv4Ext/IPv6Ext, enable public routing
                 if network_model.type in ["IPv4Ext", "IPv6Ext"] and public_ips_to_route:
                     logger.info(f"Enabling public routing for {network_name}")
-                    print(f"   🌍 Enabling public routing for {len(public_ips_to_route)} IPs...")
+                    print(f"   🌐 Enabling public routing for {len(public_ips_to_route)} IPs...")
                     
                     try:
                         if network_model.type == "IPv4Ext":
@@ -402,10 +497,13 @@ def deploy_topology_to_fabric(
     """
     Create and submit a FABRIC slice from the provided topology.
     
-    This function only creates the slice infrastructure:
+    This function creates the slice infrastructure:
     1. Create nodes with components (NICs, DPUs, GPUs, FPGAs, NVMe)
-    2. Create and bind networks
-    3. Submit slice
+    2. Apply worker constraints if specified
+    3. Add post-boot commands if specified
+    4. Add facility ports if defined
+    5. Create and bind networks (including facility port connections)
+    6. Submit slice
     
     After this, you should call:
     - configure_l3_networks(slice, topology) - for L3 network IP assignment
@@ -429,20 +527,30 @@ def deploy_topology_to_fabric(
         fab = fablib()
         slice = fab.new_slice(name=unique_slice_name)
         logger.info(f"Creating slice: {unique_slice_name}")
-        print(f"\n🛠️  Creating slice: {unique_slice_name}\n")
+        print(f"\n🛠️ Creating slice: {unique_slice_name}\n")
         
         # Add nodes
         for node_id, node in topology.site_topology_nodes.nodes.items():
             logger.info(f"Adding node: {node.hostname}")
             
-            fab_node = slice.add_node(
-                name=node.hostname,
-                site=node.site,
-                cores=node.capacity.cpu,
-                ram=node.capacity.ram,
-                disk=node.capacity.disk,
-                image=node.capacity.os
-            )
+            # Prepare add_node arguments
+            add_node_kwargs = {
+                'name': node.hostname,
+                'site': node.site,
+                'cores': node.capacity.cpu,
+                'ram': node.capacity.ram,
+                'disk': node.capacity.disk,
+                'image': node.capacity.os
+            }
+            
+            # Add worker constraint if specified
+            if node.has_worker_constraint():
+                add_node_kwargs['host'] = node.worker
+                logger.info(f"Node {node.hostname} constrained to worker: {node.worker}")
+                print(f"   📍 Placing {node.hostname} on worker: {node.worker}")
+            
+            # Create the node
+            fab_node = slice.add_node(**add_node_kwargs)
             
             # Add components
             add_gpus_to_node(fab_node, node)
@@ -451,9 +559,15 @@ def deploy_topology_to_fabric(
             add_nvmes_to_node(fab_node, node)
             add_nics_to_node(fab_node, node)
             add_persistent_storage_to_node(fab_node, node)
+            
+            # Add post-boot commands if specified
+            add_postboot_commands_to_node(fab_node, node)
         
-        # Create and bind networks (handles NICs, DPUs, and FPGAs)
-        create_and_bind_networks(topology, slice)
+        # Add facility ports if defined
+        facility_port_objects = add_facility_ports_to_slice(topology, slice)
+        
+        # Create and bind networks (handles NICs, DPUs, FPGAs, and facility ports)
+        create_and_bind_networks(topology, slice, facility_port_objects)
         
         # Submit slice
         logger.info("Submitting slice to FABRIC...")
