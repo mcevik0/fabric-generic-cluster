@@ -1,13 +1,13 @@
 # slice_network_config.py
 """
 Network interface configuration for FABRIC slices.
-Handles IP address assignment, NetworkManager configuration, and network testing.
+Handles IP address assignment, routing, NetworkManager configuration, and network testing.
 Supports NetworkManager (RHEL/Rocky), netplan (Ubuntu), systemd-networkd (modern Debian),
 and traditional /etc/network/interfaces (old Debian).
 """
 
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Tuple
 from tabulate import tabulate
 
 from .models import SiteTopology, Node, Interface
@@ -37,7 +37,6 @@ def detect_network_manager(fab_node) -> str:
         'networkmanager', 'netplan', 'systemd-networkd', or 'interfaces'
     """
     try:
-        # Check for NetworkManager (Red Hat family, some Ubuntu/Debian)
         stdout, _ = fab_node.execute("command -v nmcli")
         if stdout.strip():
             logger.debug("Detected NetworkManager (nmcli)")
@@ -46,7 +45,6 @@ def detect_network_manager(fab_node) -> str:
         pass
     
     try:
-        # Check for netplan (Ubuntu 18.04+)
         stdout, _ = fab_node.execute("command -v netplan")
         if stdout.strip():
             logger.debug("Detected netplan")
@@ -55,7 +53,6 @@ def detect_network_manager(fab_node) -> str:
         pass
     
     try:
-        # Check for systemd-networkd (modern Debian, some Ubuntu)
         stdout, _ = fab_node.execute("systemctl is-active systemd-networkd 2>/dev/null || systemctl status systemd-networkd 2>/dev/null")
         if stdout.strip():
             logger.debug("Detected systemd-networkd")
@@ -64,7 +61,6 @@ def detect_network_manager(fab_node) -> str:
         pass
     
     try:
-        # Check if traditional interfaces file exists and ifup/ifdown are available
         stdout1, _ = fab_node.execute("test -f /etc/network/interfaces && echo 'exists'")
         stdout2, _ = fab_node.execute("command -v ifup")
         if "exists" in stdout1 and stdout2.strip():
@@ -73,25 +69,40 @@ def detect_network_manager(fab_node) -> str:
     except:
         pass
     
-    # Default to systemd-networkd for modern systems
     logger.warning("Could not detect network manager, defaulting to systemd-networkd")
     return 'systemd-networkd'
+
+
+def prefix_to_netmask(prefix_len: int) -> str:
+    """
+    Convert CIDR prefix length to netmask.
+    
+    Args:
+        prefix_len: Prefix length (e.g., 24)
+        
+    Returns:
+        Netmask string (e.g., '255.255.255.0')
+    """
+    import ipaddress
+    return str(ipaddress.IPv4Network(f'0.0.0.0/{prefix_len}').netmask)
 
 
 def configure_interface_networkmanager(
     fab_node,
     os_iface: str,
     ipv4_addr: str = None,
-    ipv6_addr: str = None
+    ipv6_addr: str = None,
+    routes: List[Tuple[str, str]] = None
 ) -> bool:
     """
-    Configure interface using NetworkManager (nmcli).
+    Configure interface using NetworkManager (nmcli) with routing support.
     
     Args:
         fab_node: FABRIC node object
         os_iface: OS interface name (e.g., 'eth1', 'enp7s0')
         ipv4_addr: IPv4 address with CIDR (e.g., '10.0.1.1/24')
         ipv6_addr: IPv6 address with CIDR (e.g., 'fd00::1/64')
+        routes: List of (subnet, gateway) tuples for static routes
         
     Returns:
         True if successful, False otherwise
@@ -126,6 +137,26 @@ def configure_interface_networkmanager(
                 f'ipv6.addresses {ipv6_addr} ipv6.method manual'
             )
         
+        # Add static routes
+        if routes:
+            for subnet, gateway in routes:
+                try:
+                    if ':' in subnet:
+                        # IPv6 route
+                        fab_node.execute(
+                            f'sudo nmcli connection modify "{connection_name}" '
+                            f'+ipv6.routes "{subnet} {gateway}"'
+                        )
+                    else:
+                        # IPv4 route
+                        fab_node.execute(
+                            f'sudo nmcli connection modify "{connection_name}" '
+                            f'+ipv4.routes "{subnet} {gateway}"'
+                        )
+                    logger.info(f"NetworkManager: Added route {subnet} via {gateway}")
+                except Exception as e:
+                    logger.warning(f"Failed to add route {subnet} via {gateway}: {e}")
+        
         # Bring up the interface
         fab_node.execute(f'sudo nmcli connection up "{connection_name}"')
         
@@ -141,16 +172,18 @@ def configure_interface_netplan(
     fab_node,
     os_iface: str,
     ipv4_addr: str = None,
-    ipv6_addr: str = None
+    ipv6_addr: str = None,
+    routes: List[Tuple[str, str]] = None
 ) -> bool:
     """
-    Configure interface using netplan (Ubuntu 18.04+).
+    Configure interface using netplan (Ubuntu 18.04+) with routing support.
     
     Args:
         fab_node: FABRIC node object
         os_iface: OS interface name
         ipv4_addr: IPv4 address with CIDR
         ipv6_addr: IPv6 address with CIDR
+        routes: List of (subnet, gateway) tuples for static routes
         
     Returns:
         True if successful, False otherwise
@@ -175,6 +208,14 @@ def configure_interface_netplan(
             if ipv6_addr:
                 config_content += f"        - {ipv6_addr}\n"
         
+        # Add static routes
+        if routes:
+            config_content += "      routes:\n"
+            for subnet, gateway in routes:
+                config_content += f"        - to: {subnet}\n"
+                config_content += f"          via: {gateway}\n"
+                logger.info(f"netplan: Adding route {subnet} via {gateway}")
+        
         # Write configuration file
         fab_node.execute(f'cat > /tmp/netplan-{os_iface}.yaml << "EOF"\n{config_content}\nEOF')
         fab_node.execute(f'sudo mv /tmp/netplan-{os_iface}.yaml {netplan_config}')
@@ -195,16 +236,18 @@ def configure_interface_systemd_networkd(
     fab_node,
     os_iface: str,
     ipv4_addr: str = None,
-    ipv6_addr: str = None
+    ipv6_addr: str = None,
+    routes: List[Tuple[str, str]] = None
 ) -> bool:
     """
-    Configure interface using systemd-networkd (modern Debian/Ubuntu).
+    Configure interface using systemd-networkd (modern Debian/Ubuntu) with routing support.
     
     Args:
         fab_node: FABRIC node object
         os_iface: OS interface name
         ipv4_addr: IPv4 address with CIDR
         ipv6_addr: IPv6 address with CIDR
+        routes: List of (subnet, gateway) tuples for static routes
         
     Returns:
         True if successful, False otherwise
@@ -227,6 +270,12 @@ Name={os_iface}
         
         if ipv6_addr:
             config_content += f"Address={ipv6_addr}\n"
+        
+        # Add static routes
+        if routes:
+            for subnet, gateway in routes:
+                config_content += f"\n[Route]\nDestination={subnet}\nGateway={gateway}\n"
+                logger.info(f"systemd-networkd: Adding route {subnet} via {gateway}")
         
         # Write configuration file
         fab_node.execute(f'cat > /tmp/networkd-{os_iface}.network << "EOF"\n{config_content}\nEOF')
@@ -252,16 +301,18 @@ def configure_interface_traditional(
     fab_node,
     os_iface: str,
     ipv4_addr: str = None,
-    ipv6_addr: str = None
+    ipv6_addr: str = None,
+    routes: List[Tuple[str, str]] = None
 ) -> bool:
     """
-    Configure interface using traditional /etc/network/interfaces (old Debian/Ubuntu).
+    Configure interface using traditional /etc/network/interfaces (old Debian/Ubuntu) with routing support.
     
     Args:
         fab_node: FABRIC node object
         os_iface: OS interface name
         ipv4_addr: IPv4 address with CIDR
         ipv6_addr: IPv6 address with CIDR
+        routes: List of (subnet, gateway) tuples for static routes
         
     Returns:
         True if successful, False otherwise
@@ -310,12 +361,28 @@ def configure_interface_traditional(
             config_lines.append(f"iface {os_iface} inet static")
             config_lines.append(f"    address {address}")
             config_lines.append(f"    netmask {prefix_to_netmask(prefix_len)}")
+            
+            # Add IPv4 routes
+            if routes:
+                for subnet, gateway in routes:
+                    if ':' not in subnet:  # IPv4 route
+                        config_lines.append(f"    up ip route add {subnet} via {gateway}")
+                        config_lines.append(f"    down ip route del {subnet} via {gateway} 2>/dev/null || true")
+                        logger.info(f"Traditional: Adding IPv4 route {subnet} via {gateway}")
         else:
             config_lines.append(f"iface {os_iface} inet manual")
         
         if ipv6_addr:
             config_lines.append(f"\niface {os_iface} inet6 static")
             config_lines.append(f"    address {ipv6_addr}")
+            
+            # Add IPv6 routes
+            if routes:
+                for subnet, gateway in routes:
+                    if ':' in subnet:  # IPv6 route
+                        config_lines.append(f"    up ip -6 route add {subnet} via {gateway}")
+                        config_lines.append(f"    down ip -6 route del {subnet} via {gateway} 2>/dev/null || true")
+                        logger.info(f"Traditional: Adding IPv6 route {subnet} via {gateway}")
         
         # Append to interfaces file
         config_text = '\n'.join(config_lines) + '\n'
@@ -333,18 +400,91 @@ def configure_interface_traditional(
         return False
 
 
-def prefix_to_netmask(prefix_len: int) -> str:
+def collect_node_routes(
+    fab_node,
+    node: Node,
+    topology: SiteTopology,
+    slice_obj
+) -> List[Tuple[str, str]]:
     """
-    Convert CIDR prefix length to netmask.
+    Collect all routes that should be configured for a node.
+    
+    This implements the same routing logic as configure_l3_networks:
+    - For each L3 network the node is NOT connected to, add a route via a gateway
+      from a network the node IS connected to
     
     Args:
-        prefix_len: Prefix length (e.g., 24)
+        fab_node: FABRIC node object
+        node: Node model from topology
+        topology: Site topology model
+        slice_obj: FABRIC slice object
         
     Returns:
-        Netmask string (e.g., '255.255.255.0')
+        List of (subnet, gateway) tuples
     """
-    import ipaddress
-    return str(ipaddress.IPv4Network(f'0.0.0.0/{prefix_len}').netmask)
+    routes = []
+    
+    try:
+        # Find all L3 networks the node is connected to
+        connected_networks = []
+        network_gateways = {}  # {network_name: (gateway, type)}
+        
+        for nic_name, iface_name, iface in node.get_all_interfaces():
+            if not iface.binding:
+                continue
+            
+            network = topology.get_network_by_name(iface.binding)
+            if network and network.is_orchestrator_managed():
+                connected_networks.append(iface.binding)
+                
+                # Get the gateway for this network
+                try:
+                    fabric_network = slice_obj.get_network(name=iface.binding)
+                    gateway = fabric_network.get_gateway()
+                    if gateway:
+                        network_gateways[iface.binding] = (gateway, network.type)
+                except Exception as e:
+                    logger.warning(f"Could not get gateway for {iface.binding}: {e}")
+        
+        # Find all L3 networks in the topology
+        all_l3_networks = []
+        for network in topology.site_topology_networks.iter_networks():
+            if network.is_orchestrator_managed():
+                all_l3_networks.append(network.name)
+        
+        # Find networks this node is NOT connected to
+        other_networks = [net for net in all_l3_networks if net not in connected_networks]
+        
+        # For each remote network, add a route
+        for target_network_name in other_networks:
+            target_network = topology.get_network_by_name(target_network_name)
+            if not target_network:
+                continue
+            
+            try:
+                fabric_network = slice_obj.get_network(name=target_network_name)
+                target_subnet = fabric_network.get_subnet()
+                
+                # Determine if target is IPv6
+                is_ipv6_target = target_network.type in ["IPv6", "IPv6Ext"]
+                
+                # Find a suitable gateway from connected networks
+                for connected_network, (gateway, network_type) in network_gateways.items():
+                    is_ipv6_gateway = network_type in ["IPv6", "IPv6Ext"]
+                    
+                    # Match IPv4 with IPv4, IPv6 with IPv6
+                    if is_ipv6_target == is_ipv6_gateway:
+                        routes.append((str(target_subnet), str(gateway)))
+                        logger.info(f"Collected route: {target_subnet} via {gateway}")
+                        break
+            except Exception as e:
+                logger.warning(f"Failed to collect route for {target_network_name}: {e}")
+                continue
+    
+    except Exception as e:
+        logger.error(f"Error collecting routes for {node.hostname}: {e}")
+    
+    return routes
 
 
 def configure_interface_on_node(
@@ -370,6 +510,7 @@ def configure_interface_on_node(
     For L3 networks (IPv4, IPv6, IPv4Ext, IPv6Ext):
         - Retrieves actual assigned IPs from the FABRIC interface
         - These IPs were assigned by configure_l3_networks() from orchestrator
+        - Configures routing to other L3 networks
     
     Args:
         fab_node: FABRIC node object
@@ -480,28 +621,41 @@ def configure_interface_on_node(
         
         if ipv4_addr:
             logger.debug(f"Setting IPv4 {ipv4_addr} on {node.hostname}:{os_iface}")
-            print(f"   📝 IPv4: {ipv4_addr}")
+            print(f"   🔹 IPv4: {ipv4_addr}")
         if ipv6_addr:
             logger.debug(f"Setting IPv6 {ipv6_addr} on {node.hostname}:{os_iface}")
-            print(f"   📝 IPv6: {ipv6_addr}")
+            print(f"   🔹 IPv6: {ipv6_addr}")
+        
+        # ============================================================
+        # NEW SECTION: Collect routes for this node (only for L3 networks)
+        # ============================================================
+        routes = []
+        if network.is_orchestrator_managed():
+            routes = collect_node_routes(fab_node, node, topology, slice_obj)
+            if routes:
+                logger.info(f"Collected {len(routes)} routes for {node.hostname}")
+                print(f"   🔀 Adding {len(routes)} inter-network routes")
+                for subnet, gateway in routes:
+                    print(f"      → {subnet} via {gateway}")
+        # ============================================================
         
         # Configure based on detected tool
         success = False
         if net_manager == 'networkmanager':
             success = configure_interface_networkmanager(
-                fab_node, os_iface, ipv4_addr, ipv6_addr
+                fab_node, os_iface, ipv4_addr, ipv6_addr, routes
             )
         elif net_manager == 'netplan':
             success = configure_interface_netplan(
-                fab_node, os_iface, ipv4_addr, ipv6_addr
+                fab_node, os_iface, ipv4_addr, ipv6_addr, routes
             )
         elif net_manager == 'systemd-networkd':
             success = configure_interface_systemd_networkd(
-                fab_node, os_iface, ipv4_addr, ipv6_addr
+                fab_node, os_iface, ipv4_addr, ipv6_addr, routes
             )
         else:  # traditional interfaces
             success = configure_interface_traditional(
-                fab_node, os_iface, ipv4_addr, ipv6_addr
+                fab_node, os_iface, ipv4_addr, ipv6_addr, routes
             )
         
         if success:
@@ -528,6 +682,7 @@ def configure_node_interfaces(slice_obj, topology: SiteTopology) -> None:
     Handles both L2 and L3 networks:
     - L2 networks: Uses IPs from YAML configuration
     - L3 networks: Retrieves IPs assigned by configure_l3_networks()
+    - Adds persistent routing configuration for inter-network connectivity
     
     Args:
         slice_obj: FABRIC slice object
@@ -730,7 +885,7 @@ def ping_network_from_node(
             continue
         
         # Perform ping
-        print(f"\n📍 Pinging {target_node.hostname} ({target_ip})...")
+        print(f"\n🔍 Pinging {target_node.hostname} ({target_ip})...")
         try:
             ping_cmd = f"ping6 -c {count}" if use_ipv6 else f"ping -c {count}"
             stdout, stderr = source_fab_node.execute(f"{ping_cmd} {target_ip}")
