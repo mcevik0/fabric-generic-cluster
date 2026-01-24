@@ -370,6 +370,7 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
     1. Gets available IP addresses from the orchestrator-assigned subnet
     2. Assigns IPs to node interfaces (both NIC and DPU interfaces)
     3. For IPv4Ext/IPv6Ext networks, enables public routing
+    4. Configures routing between L3 networks for each node
     
     Args:
         slice: FABRIC slice object (must be already submitted)
@@ -386,6 +387,10 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
         
         # Track if we need to submit again (for public routing)
         needs_resubmit = False
+        
+        # Store network information for routing configuration
+        network_info = {}  # {network_name: {'subnet': subnet, 'gateway': gateway, 'type': type}}
+        node_network_mapping = {}  # {node_hostname: [list of connected network names]}
         
         # Process each network
         for network_model in topology.site_topology_networks.iter_networks():
@@ -413,7 +418,15 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
                 
                 # Get the subnet for this network
                 network_subnet = fabric_network.get_subnet()
-                logger.debug(f"Network {network_name} subnet: {network_subnet}")
+                network_gateway = fabric_network.get_gateway()
+                logger.debug(f"Network {network_name} subnet: {network_subnet}, gateway: {network_gateway}")
+                
+                # Store network info for routing configuration
+                network_info[network_name] = {
+                    'subnet': network_subnet,
+                    'gateway': network_gateway,
+                    'type': network_model.type
+                }
                 
                 # Get all nodes connected to this network
                 connected_nodes = topology.get_nodes_on_network(network_name)
@@ -426,6 +439,11 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
                     try:
                         fab_node = slice.get_node(name=node_model.hostname)
                         fab_iface = fab_node.get_interface(network_name=network_name)
+                        
+                        # Track which networks each node is connected to
+                        if node_model.hostname not in node_network_mapping:
+                            node_network_mapping[node_model.hostname] = []
+                        node_network_mapping[node_model.hostname].append(network_name)
                         
                         # Pop the first available IP
                         if not available_ips:
@@ -452,7 +470,7 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
                 # For IPv4Ext/IPv6Ext, enable public routing
                 if network_model.type in ["IPv4Ext", "IPv6Ext"] and public_ips_to_route:
                     logger.info(f"Enabling public routing for {network_name}")
-                    print(f"   🌐 Enabling public routing for {len(public_ips_to_route)} IPs...")
+                    print(f"   🌍 Enabling public routing for {len(public_ips_to_route)} IPs...")
                     
                     try:
                         if network_model.type == "IPv4Ext":
@@ -478,6 +496,76 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
             print("\n🚀 Submitting public routing configuration...")
             slice.submit()
             print("✅ Public routing configuration submitted")
+        
+        # Configure inter-network routing for each node
+        logger.info("Starting inter-network routing configuration")
+        print("\n🔀 Configuring inter-network routing...\n")
+        
+        for node_hostname, connected_networks in node_network_mapping.items():
+            try:
+                fab_node = slice.get_node(name=node_hostname)
+                
+                # Get all L3 networks in topology
+                all_l3_networks = [net_name for net_name in network_info.keys()]
+                
+                # Find networks this node is NOT connected to
+                other_networks = [net for net in all_l3_networks if net not in connected_networks]
+                
+                if not other_networks:
+                    logger.debug(f"Node {node_hostname} is connected to all L3 networks, no additional routes needed")
+                    print(f"ℹ️  {node_hostname}: Connected to all networks, no routes needed")
+                    continue
+                
+                logger.info(f"Configuring routes on {node_hostname}")
+                print(f"🔧 Configuring routes on {node_hostname}:")
+                
+                routes_added = 0
+                
+                # For each network this node is NOT connected to, add routes via connected networks
+                for target_network in other_networks:
+                    target_subnet = network_info[target_network]['subnet']
+                    target_type = network_info[target_network]['type']
+                    
+                    # Determine which gateway to use based on IP version compatibility
+                    # IPv4 routes use IPv4 gateways, IPv6 routes use IPv6 gateways
+                    is_ipv6_target = target_type in ["IPv6", "IPv6Ext"]
+                    
+                    # Find a suitable gateway from the networks this node IS connected to
+                    gateway_found = False
+                    for connected_network in connected_networks:
+                        connected_type = network_info[connected_network]['type']
+                        is_ipv6_connected = connected_type in ["IPv6", "IPv6Ext"]
+                        
+                        # Match IPv4 with IPv4, IPv6 with IPv6
+                        if is_ipv6_target == is_ipv6_connected:
+                            gateway = network_info[connected_network]['gateway']
+                            
+                            try:
+                                fab_node.ip_route_add(subnet=target_subnet, gateway=gateway)
+                                logger.info(f"  Added route on {node_hostname}: {target_subnet} via {gateway} ({connected_network})")
+                                print(f"   ✅ Route: {target_network} ({target_subnet}) via {connected_network} ({gateway})")
+                                routes_added += 1
+                                gateway_found = True
+                                break  # Only add one route per target network
+                            except Exception as e:
+                                logger.warning(f"  Failed to add route on {node_hostname} for {target_subnet} via {gateway}: {e}")
+                                print(f"   ⚠️  Route failed: {target_network} via {gateway}: {e}")
+                    
+                    if not gateway_found:
+                        logger.warning(f"  No suitable gateway found on {node_hostname} for {target_network} ({target_type})")
+                        print(f"   ⚠️  No suitable gateway for {target_network} ({target_type})")
+                
+                if routes_added > 0:
+                    logger.info(f"Added {routes_added} routes on {node_hostname}")
+                    print(f"   📊 Total routes added: {routes_added}")
+                else:
+                    logger.info(f"No routes added on {node_hostname}")
+                    print(f"   ℹ️  No routes added")
+                    
+            except Exception as e:
+                logger.error(f"Failed to configure routing on {node_hostname}: {e}")
+                print(f"❌ Error configuring routing on {node_hostname}: {e}")
+                continue
         
         logger.info("L3 network configuration completed")
         print("\n✅ L3 network configuration completed\n")
