@@ -5,7 +5,7 @@ Handles FABRIC slice creation and resource provisioning.
 """
 
 import logging
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 from fabrictestbed_extensions.fablib.fablib import FablibManager as fablib
@@ -369,8 +369,10 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
     This function:
     1. Gets available IP addresses from the orchestrator-assigned subnet
     2. Assigns IPs to node interfaces (both NIC and DPU interfaces)
-    3. For IPv4Ext/IPv6Ext networks, enables public routing
-    4. Configures routing between L3 networks for each node
+    3. Configures routing between L3 networks for each node
+    
+    NOTE: For IPv4Ext/IPv6Ext networks, call enable_public_routing() separately
+    to enable public internet access.
     
     Args:
         slice: FABRIC slice object (must be already submitted)
@@ -384,9 +386,6 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
     
     try:
         fab = fablib()
-        
-        # Track if we need to submit again (for public routing)
-        needs_resubmit = False
         
         # Store network information for routing configuration
         network_info = {}  # {network_name: {'subnet': subnet, 'gateway': gateway, 'type': type}}
@@ -431,9 +430,6 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
                 # Get all nodes connected to this network
                 connected_nodes = topology.get_nodes_on_network(network_name)
                 
-                # Track IPs for external routing
-                public_ips_to_route = []
-                
                 # Configure each node's interface
                 for node_model in connected_nodes:
                     try:
@@ -458,44 +454,15 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
                         logger.info(f"Assigned {node_ip} to {node_model.hostname}")
                         print(f"   ✅ {node_model.hostname}: {node_ip}")
                         
-                        # Track for public routing if IPv4Ext or IPv6Ext
-                        if network_model.type in ["IPv4Ext", "IPv6Ext"]:
-                            public_ips_to_route.append(str(node_ip))
-                        
                     except Exception as e:
                         logger.error(f"Failed to configure {node_model.hostname} on {network_name}: {e}")
                         print(f"   ❌ Error configuring {node_model.hostname}: {e}")
                         continue
                 
-                # For IPv4Ext/IPv6Ext, enable public routing
-                if network_model.type in ["IPv4Ext", "IPv6Ext"] and public_ips_to_route:
-                    logger.info(f"Enabling public routing for {network_name}")
-                    print(f"   🌍 Enabling public routing for {len(public_ips_to_route)} IPs...")
-                    
-                    try:
-                        if network_model.type == "IPv4Ext":
-                            fabric_network.make_ip_publicly_routable(ipv4=public_ips_to_route)
-                        elif network_model.type == "IPv6Ext":
-                            fabric_network.make_ip_publicly_routable(ipv6=public_ips_to_route)
-                        
-                        logger.info(f"Public routing enabled for {network_name}")
-                        print(f"   ✅ Public routing enabled")
-                        needs_resubmit = True
-                    except Exception as e:
-                        logger.error(f"Failed to enable public routing for {network_name}: {e}")
-                        print(f"   ❌ Failed to enable public routing: {e}")
-                
             except Exception as e:
                 logger.error(f"Failed to configure network {network_name}: {e}")
                 print(f"   ❌ Error configuring network: {e}")
                 continue
-        
-        # Submit changes if any external networks were configured
-        if needs_resubmit:
-            logger.info("Submitting slice with public routing configuration...")
-            print("\n🚀 Submitting public routing configuration...")
-            slice.submit()
-            print("✅ Public routing configuration submitted")
         
         # Configure inter-network routing for each node
         logger.info("Starting inter-network routing configuration")
@@ -568,10 +535,130 @@ def configure_l3_networks(slice, topology: SiteTopology) -> None:
                 continue
         
         logger.info("L3 network configuration completed")
-        print("\n✅ L3 network configuration completed\n")
+        print("\n✅ L3 network configuration completed")
+        
+        # Check if there are any IPv4Ext/IPv6Ext networks
+        ext_networks = [name for name, info in network_info.items() 
+                       if info['type'] in ["IPv4Ext", "IPv6Ext"]]
+        if ext_networks:
+            print("\n💡 Note: You have external networks (IPv4Ext/IPv6Ext):")
+            for net_name in ext_networks:
+                print(f"   - {net_name}")
+            print("\n   To enable public internet routing, call:")
+            print("   enable_public_routing(slice, topology)\n")
         
     except Exception as e:
         error_msg = f"Failed to configure L3 networks: {e}"
+        logger.error(error_msg)
+        print(f"❌ {error_msg}")
+        raise SliceDeploymentError(error_msg) from e
+
+
+def enable_public_routing(slice, topology: SiteTopology, networks: List[str] = None) -> None:
+    """
+    Enable public internet routing for IPv4Ext/IPv6Ext networks.
+    
+    This should be called AFTER configure_l3_networks() has completed.
+    It enables public routing for external network types, making the assigned
+    IPs publicly routable on the internet.
+    
+    Args:
+        slice: FABRIC slice object (must have L3 networks already configured)
+        topology: Site topology model
+        networks: Optional list of specific network names to enable routing for.
+                 If None, enables for all IPv4Ext/IPv6Ext networks.
+        
+    Raises:
+        SliceDeploymentError: If public routing configuration fails
+    """
+    logger.info("Starting public routing configuration")
+    print("\n🌍 Enabling public internet routing...\n")
+    
+    try:
+        fab = fablib()
+        needs_resubmit = False
+        
+        # Process each network
+        for network_model in topology.site_topology_networks.iter_networks():
+            # Only process external network types
+            if network_model.type not in ["IPv4Ext", "IPv6Ext"]:
+                continue
+            
+            # If specific networks requested, check if this is one of them
+            if networks is not None and network_model.name not in networks:
+                continue
+            
+            network_name = network_model.name
+            logger.info(f"Enabling public routing for: {network_name} (type: {network_model.type})")
+            print(f"🔧 Enabling public routing for: {network_name} ({network_model.type})")
+            
+            try:
+                # Get the network from the slice
+                fabric_network = slice.get_network(name=network_name)
+                
+                # Get all nodes connected to this network
+                connected_nodes = topology.get_nodes_on_network(network_name)
+                
+                # Collect IPs that need public routing
+                public_ips_to_route = []
+                
+                for node_model in connected_nodes:
+                    try:
+                        fab_node = slice.get_node(name=node_model.hostname)
+                        fab_iface = fab_node.get_interface(network_name=network_name)
+                        
+                        # Get the assigned IP
+                        node_ip = fab_iface.get_ip_addr()
+                        if node_ip:
+                            public_ips_to_route.append(str(node_ip))
+                            logger.info(f"  Will enable routing for {node_model.hostname}: {node_ip}")
+                            print(f"   📍 {node_model.hostname}: {node_ip}")
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to get IP for {node_model.hostname} on {network_name}: {e}")
+                        print(f"   ⚠️  Could not get IP for {node_model.hostname}: {e}")
+                        continue
+                
+                # Enable public routing for collected IPs
+                if public_ips_to_route:
+                    logger.info(f"Enabling public routing for {len(public_ips_to_route)} IPs on {network_name}")
+                    print(f"   🌐 Enabling routing for {len(public_ips_to_route)} IPs...")
+                    
+                    try:
+                        if network_model.type == "IPv4Ext":
+                            fabric_network.make_ip_publicly_routable(ipv4=public_ips_to_route)
+                        elif network_model.type == "IPv6Ext":
+                            fabric_network.make_ip_publicly_routable(ipv6=public_ips_to_route)
+                        
+                        logger.info(f"Public routing enabled for {network_name}")
+                        print(f"   ✅ Public routing enabled for {network_name}")
+                        needs_resubmit = True
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to enable public routing for {network_name}: {e}")
+                        print(f"   ❌ Failed to enable public routing: {e}")
+                else:
+                    logger.warning(f"No IPs found to enable routing for {network_name}")
+                    print(f"   ⚠️  No IPs found for {network_name}")
+                
+            except Exception as e:
+                logger.error(f"Failed to process network {network_name}: {e}")
+                print(f"   ❌ Error processing network: {e}")
+                continue
+        
+        # Submit changes if any external networks were configured
+        if needs_resubmit:
+            logger.info("Submitting slice with public routing configuration...")
+            print("\n🚀 Submitting public routing configuration...")
+            slice.submit()
+            logger.info("Public routing configuration submitted successfully")
+            print("✅ Public routing configuration submitted\n")
+        else:
+            logger.info("No public routing changes to submit")
+            print("\nℹ️  No public routing changes were made\n")
+        
+    except Exception as e:
+        error_msg = f"Failed to enable public routing: {e}"
         logger.error(error_msg)
         print(f"❌ {error_msg}")
         raise SliceDeploymentError(error_msg) from e
@@ -594,7 +681,8 @@ def deploy_topology_to_fabric(
     6. Submit slice
     
     After this, you should call:
-    - configure_l3_networks(slice, topology) - for L3 network IP assignment
+    - configure_l3_networks(slice, topology) - for L3 network IP assignment and routing
+    - enable_public_routing(slice, topology) - OPTIONAL: for IPv4Ext/IPv6Ext public access
     - configure_node_interfaces(slice, topology) - for persistent network config
     
     Args:
@@ -631,6 +719,7 @@ def deploy_topology_to_fabric(
                 'image': node.capacity.os
             }
             
+            
             # Add worker constraint if specified
             if node.has_worker_constraint():
                 add_node_kwargs['host'] = node.worker
@@ -662,14 +751,16 @@ def deploy_topology_to_fabric(
         print("\n🚀 Submitting slice...")
         slice.submit()
         
+        # At the end, update the print statement:
         logger.info(f"Slice '{unique_slice_name}' submitted successfully")
         print(f"✅ Slice '{unique_slice_name}' created successfully")
         print(f"\n💡 Next steps:")
         print(f"   1. Call configure_l3_networks(slice, topology) for L3 IP assignment")
-        print(f"   2. Call configure_node_interfaces(slice, topology) for persistent config")
-        
-        return slice
-        
+        print(f"   2. [Optional] Call enable_public_routing(slice, topology) for IPv4Ext/IPv6Ext")
+        print(f"   3. Call configure_node_interfaces(slice, topology) for persistent config")
+    
+        return slice       
+
     except Exception as e:
         error_msg = f"Failed to deploy slice: {e}"
         logger.critical(error_msg)
