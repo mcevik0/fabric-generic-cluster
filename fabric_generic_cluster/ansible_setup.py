@@ -163,36 +163,97 @@ def _install_ansible_debian_based(fab_node, python_version: str, os_type: str) -
         print("   ⏳ Updating package manager (this may take a moment)...")
         fab_node.execute("sudo apt-get update -qq")
         
-        # Install Python and venv
-        print(f"   🐍 Installing Python {python_version} and dependencies...")
+        # Detect which Python version is actually available
+        print(f"   🔍 Checking for Python {python_version}...")
         
-        # Try to install specified Python version, fall back to python3 if not available
+        python_cmd = None
+        
+        # Try requested Python version first
         try:
-            fab_node.execute(
-                f"sudo apt-get install -y python{python_version} python{python_version}-venv python{python_version}-dev"
-            )
-            python_cmd = f"python{python_version}"
+            stdout, stderr = fab_node.execute(f"which python{python_version}")
+            if stdout.strip():
+                python_cmd = f"python{python_version}"
+                print(f"   ✅ Found python{python_version}")
         except:
-            logger.warning(f"Python {python_version} not available, trying python3")
-            print(f"   ⚠️  Python {python_version} not available, using python3")
-            fab_node.execute("sudo apt-get install -y python3 python3-venv python3-dev")
-            python_cmd = "python3"
+            pass
+        
+        # If not found, try to install it
+        if not python_cmd:
+            try:
+                print(f"   ⏳ Attempting to install python{python_version}...")
+                stdout, stderr = fab_node.execute(
+                    f"sudo apt-get install -y python{python_version} python{python_version}-venv python{python_version}-dev 2>&1"
+                )
+                
+                # Check if installation succeeded
+                stdout_check, _ = fab_node.execute(f"which python{python_version}")
+                if stdout_check.strip():
+                    python_cmd = f"python{python_version}"
+                    print(f"   ✅ Installed python{python_version}")
+                else:
+                    print(f"   ⚠️  python{python_version} not available in repositories")
+            except Exception as e:
+                print(f"   ⚠️  Could not install python{python_version}: {e}")
+        
+        # Fall back to python3 if specific version not available
+        if not python_cmd:
+            print(f"   ℹ️  Falling back to default python3")
+            try:
+                stdout, _ = fab_node.execute("python3 --version")
+                python_cmd = "python3"
+                print(f"   ✅ Using {stdout.strip()}")
+            except:
+                print("   ❌ No suitable Python found")
+                return False
+        
+        # Install Python venv and dev packages for the detected version
+        print(f"   📦 Installing {python_cmd} dependencies...")
+        
+        if "python3.11" in python_cmd or "python3.10" in python_cmd or "python3.9" in python_cmd:
+            # Specific version
+            version_num = python_cmd.replace("python", "")
+            fab_node.execute(
+                f"sudo apt-get install -y {python_cmd}-venv {python_cmd}-dev 2>&1 || "
+                f"sudo apt-get install -y python3-venv python3-dev"
+            )
+        else:
+            # Generic python3
+            fab_node.execute("sudo apt-get install -y python3-venv python3-dev")
         
         # Install pip and build tools
+        print("   📦 Installing build tools...")
         fab_node.execute("sudo apt-get install -y python3-pip build-essential libssl-dev libffi-dev")
         
         # Create ansible directory structure
         print("   📁 Creating Ansible directory structure...")
+        fab_node.execute("rm -rf ~/ansible")  # Clean up any failed attempts
         fab_node.execute("mkdir -p ~/ansible/{playbooks,roles,inventory,group_vars,host_vars}")
         
         # Create virtual environment
-        print("   🔨 Creating Python virtual environment...")
-        fab_node.execute(f"{python_cmd} -m venv ~/ansible/venv")
+        print(f"   🔨 Creating Python virtual environment with {python_cmd}...")
+        stdout, stderr = fab_node.execute(f"{python_cmd} -m venv ~/ansible/venv")
+        
+        if stderr and "Error" in stderr:
+            print(f"   ⚠️  venv creation had warnings: {stderr[:200]}")
+        
+        # Verify venv was created
+        stdout, _ = fab_node.execute("test -f ~/ansible/venv/bin/activate && echo 'EXISTS'")
+        if "EXISTS" not in stdout:
+            print("   ❌ Virtual environment was not created successfully")
+            return False
+        
+        print("   ✅ Virtual environment created")
         
         # Install Ansible in venv
+        print("   ⚙️  Upgrading pip in virtual environment...")
+        stdout, stderr = fab_node.execute("~/ansible/venv/bin/pip install --quiet --upgrade pip setuptools wheel")
+        
         print("   ⚙️  Installing Ansible (this may take a few minutes)...")
-        fab_node.execute("~/ansible/venv/bin/pip install --quiet --upgrade pip setuptools wheel")
-        fab_node.execute("~/ansible/venv/bin/pip install --quiet ansible")
+        stdout, stderr = fab_node.execute("~/ansible/venv/bin/pip install --quiet ansible")
+        
+        if stderr and ("error" in stderr.lower() or "failed" in stderr.lower()):
+            print(f"   ⚠️  Ansible installation had issues: {stderr[:500]}")
+            return False
         
         logger.info(f"Ansible installed successfully on {os_type}")
         return True
@@ -200,6 +261,8 @@ def _install_ansible_debian_based(fab_node, python_version: str, os_type: str) -
     except Exception as e:
         logger.error(f"Failed to install Ansible on {os_type}: {e}")
         print(f"   ❌ Installation failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
