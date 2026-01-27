@@ -5,7 +5,7 @@ A comprehensive, type-safe Python framework for managing FABRIC testbed
 generic clusters and slices with support for DPUs, FPGAs, and advanced networking.
 """
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 __author__ = "Mert Cevik"
 __email__ = "mcevik@renci.org"
 
@@ -38,6 +38,11 @@ from .ssh_setup import (
     verify_ssh_access,
 )
 
+from .ansible_setup import (
+    setup_ansible_environment,
+    test_ansible_connectivity,
+)
+
 from .topology_viewer import (
     print_topology_summary,
     print_compact_summary,
@@ -68,6 +73,10 @@ __all__ = [
     # SSH setup
     'setup_passwordless_ssh',
     'verify_ssh_access',
+
+    # Ansible setup
+    'setup_ansible_environment',
+    'test_ansible_connectivity',
 
     # Visualization
     'print_topology_summary',
