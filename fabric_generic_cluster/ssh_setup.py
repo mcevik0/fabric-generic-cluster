@@ -104,6 +104,7 @@ def collect_public_keys(slice) -> Dict[str, str]:
 def distribute_ssh_keys(slice, public_keys: Dict[str, str]) -> Dict[str, bool]:
     """
     Distribute SSH public keys to all nodes (avoiding duplicates).
+    Each node will trust all other nodes AND itself.
     
     Args:
         slice: FABRIC slice object
@@ -113,7 +114,7 @@ def distribute_ssh_keys(slice, public_keys: Dict[str, str]) -> Dict[str, bool]:
         Dictionary mapping hostname to success status
     """
     logger.info("Distributing SSH public keys to all nodes")
-    print("\n🔗 Distributing public keys without duplicates...\n")
+    print("\n🔗 Distributing public keys (including self-trust)...\n")
     
     results = {}
     
@@ -123,23 +124,24 @@ def distribute_ssh_keys(slice, public_keys: Dict[str, str]) -> Dict[str, bool]:
         
         try:
             # Ensure .ssh directory exists
-            node.execute("mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys")
+            node.execute("mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys")
             
             # Get existing keys to avoid duplicates
             existing_keys, _ = node.execute("cat ~/.ssh/authorized_keys || true")
             existing_keys_set = set(existing_keys.strip().splitlines())
             
-            # Add new keys (skip duplicates and self)
+            # Add new keys (including the node's own key for self-trust)
             keys_added = 0
             for peer_host, pub_key in public_keys.items():
-                if peer_host != hostname and pub_key not in existing_keys_set:
+                # Add all keys, including own key (no skip for self)
+                if pub_key and pub_key not in existing_keys_set:
                     safe_key = pub_key.replace('"', '\\"')
                     append_command = f'echo "{safe_key}" >> ~/.ssh/authorized_keys'
                     node.execute(append_command)
                     keys_added += 1
             
-            logger.info(f"Added {keys_added} keys to {hostname}")
-            print(f"🔑 Updated authorized_keys on {hostname} ({keys_added} new keys)")
+            logger.info(f"Added {keys_added} keys to {hostname} (including self)")
+            print(f"🔑 Updated authorized_keys on {hostname} ({keys_added} new keys, self-trust enabled)")
             results[hostname] = True
             
         except Exception as e:
@@ -200,11 +202,12 @@ def disable_strict_host_key_checking(slice) -> Dict[str, bool]:
 def setup_passwordless_ssh(slice) -> bool:
     """
     Complete setup for passwordless SSH access between all nodes.
+    Each node will trust all other nodes AND itself.
     
     This performs:
     1. Generate SSH keypairs (if missing)
     2. Collect public keys
-    3. Distribute keys to all nodes
+    3. Distribute keys to all nodes (including self-trust)
     4. Disable strict host key checking
     
     Args:
@@ -213,8 +216,8 @@ def setup_passwordless_ssh(slice) -> bool:
     Returns:
         True if setup successful, False otherwise
     """
-    logger.info("Starting passwordless SSH setup")
-    print("\n🔒 Setting up passwordless SSH access...\n")
+    logger.info("Starting passwordless SSH setup with self-trust")
+    print("\n🔐 Setting up passwordless SSH access (with self-trust)...\n")
     
     try:
         # Step 1: Generate keys
@@ -229,7 +232,7 @@ def setup_passwordless_ssh(slice) -> bool:
             logger.warning("Failed to collect all public keys")
             print("⚠️  Warning: Could not collect all public keys")
         
-        # Step 3: Distribute keys
+        # Step 3: Distribute keys (including self-trust)
         dist_results = distribute_ssh_keys(slice, public_keys)
         if not all(dist_results.values()):
             logger.warning("Some nodes failed key distribution")
@@ -241,8 +244,9 @@ def setup_passwordless_ssh(slice) -> bool:
             logger.warning("Some nodes failed SSH config update")
             print("⚠️  Warning: Some nodes failed SSH config")
         
-        logger.info("Passwordless SSH setup completed")
-        print("\n✅ Passwordless SSH setup completed\n")
+        logger.info("Passwordless SSH setup completed (self-trust enabled)")
+        print("\n✅ Passwordless SSH setup completed")
+        print("   ℹ️  All nodes can now SSH to each other AND to themselves\n")
         return True
         
     except Exception as e:
