@@ -370,6 +370,36 @@ def _install_ansible_rhel_based(fab_node, python_version: str) -> bool:
         return False
 
 
+def get_ansible_user_for_os(os_image: str) -> str:
+    """
+    Determine the default SSH user based on the OS image name.
+    
+    Args:
+        os_image: OS image string from the topology (e.g., 'default_ubuntu_24')
+        
+    Returns:
+        Username string (e.g., 'ubuntu', 'rocky', 'debian', 'centos')
+    """
+    os_lower = os_image.lower()
+    
+    if 'ubuntu' in os_lower:
+        return 'ubuntu'
+    elif 'rocky' in os_lower or 'rhel' in os_lower:
+        return 'rocky'
+    elif 'centos' in os_lower:
+        return 'centos'
+    elif 'debian' in os_lower:
+        return 'debian'
+    elif 'fedora' in os_lower:
+        return 'fedora'
+    elif 'alma' in os_lower or 'almalinux' in os_lower:
+        return 'almalinux'
+    else:
+        # Default fallback
+        logger.warning(f"Unknown OS image '{os_image}', defaulting to 'ubuntu' user")
+        return 'ubuntu'
+
+
 def generate_ansible_inventory(slice, topology: SiteTopology) -> str:
     """
     Generate an Ansible inventory file based on the topology.
@@ -378,6 +408,8 @@ def generate_ansible_inventory(slice, topology: SiteTopology) -> str:
     - OpenStack roles (control, network, compute, storage)
     - Custom groups from topology
     - All nodes in an 'all_nodes' group
+    
+    Each node gets the appropriate ansible_user based on its OS image.
     
     Args:
         slice: FABRIC slice object
@@ -422,10 +454,14 @@ def generate_ansible_inventory(slice, topology: SiteTopology) -> str:
             logger.warning(f"No IP found for {node.name}, skipping")
             continue
         
-        # Add to appropriate groups
-        node_entry = f"{node.hostname} ansible_host={management_ip}"
+        # Determine ansible_user based on OS image
+        ansible_user = get_ansible_user_for_os(node.capacity.os)
+        
+        # Build node entry with ansible_user
+        node_entry = f"{node.hostname} ansible_host={management_ip} ansible_user={ansible_user}"
         all_nodes.append(node_entry)
         
+        # Add to appropriate groups
         if node.specific.openstack.is_control():
             control_nodes.append(node_entry)
         if node.specific.openstack.is_network():
@@ -455,9 +491,8 @@ def generate_ansible_inventory(slice, topology: SiteTopology) -> str:
         inventory_lines.append("\n[openstack_storage]")
         inventory_lines.extend(storage_nodes)
     
-    # Add common variables
+    # Add common variables (removed ansible_user since it's per-host now)
     inventory_lines.append("\n[all_nodes:vars]")
-    inventory_lines.append("ansible_user=ubuntu")
     inventory_lines.append("ansible_python_interpreter=/usr/bin/python3")
     inventory_lines.append("ansible_ssh_common_args='-o StrictHostKeyChecking=no'")
     
