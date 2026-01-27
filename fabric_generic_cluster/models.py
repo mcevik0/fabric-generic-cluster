@@ -194,11 +194,18 @@ class OpenStackRoles(BaseModel):
 class NodeSpecific(BaseModel):
     """Application-specific node configuration."""
     openstack: OpenStackRoles = Field(default_factory=OpenStackRoles)
+    ansible: Optional[Dict[str, str]] = Field(default=None, description="Ansible configuration")
     postboot: Optional[str] = Field(default=None, description="Post-boot commands to execute")
-    
+
     def has_postboot_commands(self) -> bool:
         """Check if postboot commands are defined and non-empty."""
         return bool(self.postboot and self.postboot.strip())
+
+    def is_ansible_control(self) -> bool:
+        """Check if this node is designated as an Ansible control node."""
+        if not self.ansible:
+            return False
+        return self.ansible.get('control', 'false').lower() == 'true'
 
 
 class Node(BaseModel):
@@ -479,21 +486,7 @@ class SiteTopology(BaseModel):
         )
 
 
-class NodeSpecific(BaseModel):
-    """Application-specific node configuration."""
-    openstack: OpenStackRoles = Field(default_factory=OpenStackRoles)
-    ansible: Optional[Dict[str, str]] = Field(default=None, description="Ansible configuration")
-    postboot: Optional[str] = Field(default=None, description="Post-boot commands to execute")
 
-    def has_postboot_commands(self) -> bool:
-        """Check if postboot commands are defined and non-empty."""
-        return bool(self.postboot and self.postboot.strip())
-
-    def is_ansible_control(self) -> bool:
-        """Check if this node is designated as an Ansible control node."""
-        if not self.ansible:
-            return False
-        return self.ansible.get('control', 'false').lower() == 'true'
 
 
 # ============================================================================
