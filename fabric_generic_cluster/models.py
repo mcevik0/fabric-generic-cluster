@@ -4,7 +4,7 @@ Data models for FABRIC slice topology definitions.
 Provides type-safe access to topology data with automatic validation.
 """
 
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 from pydantic import BaseModel, Field, validator
 import ipaddress
 
