@@ -510,7 +510,7 @@ def generate_ansible_inventory(slice, topology: SiteTopology) -> str:
     # Build inventory file
     
     # All nodes group
-    inventory_lines.append("\n# ============================================")
+    inventory_lines.append("# ============================================")
     inventory_lines.append("# ALL NODES")
     inventory_lines.append("# ============================================")
     inventory_lines.append("[all_nodes]")
@@ -518,32 +518,34 @@ def generate_ansible_inventory(slice, topology: SiteTopology) -> str:
     
     # OpenStack role groups
     if control_nodes or network_nodes or compute_nodes or storage_nodes:
-        inventory_lines.append("\n# ============================================")
+        inventory_lines.append("")
+        inventory_lines.append("# ============================================")
         inventory_lines.append("# OPENSTACK ROLES")
         inventory_lines.append("# ============================================")
-    
-    if control_nodes:
-        inventory_lines.append("[openstack_control]")
-        inventory_lines.extend(control_nodes)
-        inventory_lines.append("")
-    
-    if network_nodes:
-        inventory_lines.append("[openstack_network]")
-        inventory_lines.extend(network_nodes)
-        inventory_lines.append("")
-    
-    if compute_nodes:
-        inventory_lines.append("[openstack_compute]")
-        inventory_lines.extend(compute_nodes)
-        inventory_lines.append("")
-    
-    if storage_nodes:
-        inventory_lines.append("[openstack_storage]")
-        inventory_lines.extend(storage_nodes)
+        
+        if control_nodes:
+            inventory_lines.append("[openstack_control]")
+            inventory_lines.extend(control_nodes)
+            inventory_lines.append("")
+        
+        if network_nodes:
+            inventory_lines.append("[openstack_network]")
+            inventory_lines.extend(network_nodes)
+            inventory_lines.append("")
+        
+        if compute_nodes:
+            inventory_lines.append("[openstack_compute]")
+            inventory_lines.extend(compute_nodes)
+            inventory_lines.append("")
+        
+        if storage_nodes:
+            inventory_lines.append("[openstack_storage]")
+            inventory_lines.extend(storage_nodes)
     
     # OS-based groups
     if os_groups:
-        inventory_lines.append("\n# ============================================")
+        inventory_lines.append("")
+        inventory_lines.append("# ============================================")
         inventory_lines.append("# OS-BASED GROUPS")
         inventory_lines.append("# ============================================")
         for os_name in sorted(os_groups.keys()):
