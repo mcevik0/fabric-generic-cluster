@@ -196,16 +196,41 @@ class NodeSpecific(BaseModel):
     openstack: OpenStackRoles = Field(default_factory=OpenStackRoles)
     ansible: Optional[Dict[str, str]] = Field(default=None, description="Ansible configuration")
     postboot: Optional[str] = Field(default=None, description="Post-boot commands to execute")
-
+    
     def has_postboot_commands(self) -> bool:
         """Check if postboot commands are defined and non-empty."""
         return bool(self.postboot and self.postboot.strip())
-
+    
     def is_ansible_control(self) -> bool:
         """Check if this node is designated as an Ansible control node."""
         if not self.ansible:
             return False
         return self.ansible.get('control', 'false').lower() == 'true'
+    
+    def get_ansible_role(self) -> Optional[str]:
+        """Get the Ansible role for this node, if specified."""
+        if not self.ansible:
+            return None
+        return self.ansible.get('role', None)
+    
+    def get_ansible_roles(self) -> List[str]:
+        """
+        Get all Ansible roles for this node.
+        Supports both single role and comma-separated roles.
+        
+        Returns:
+            List of role names (empty list if no roles defined)
+        """
+        if not self.ansible:
+            return []
+        
+        role = self.ansible.get('role', None)
+        if not role:
+            return []
+        
+        # Support comma-separated roles
+        roles = [r.strip() for r in role.split(',') if r.strip()]
+        return roles
 
 
 class Node(BaseModel):
