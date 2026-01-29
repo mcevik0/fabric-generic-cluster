@@ -768,6 +768,91 @@ def deploy_topology_to_fabric(
         raise SliceDeploymentError(error_msg) from e
 
 
+def deploy_and_configure_slice(
+    topology: SiteTopology,
+    slice_name: str,
+    configure_selinux: bool = True,
+    setup_ansible: bool = False,
+    use_timestamp: bool = False
+) -> Optional[object]:
+    """
+    Complete slice deployment and configuration workflow.
+
+    This performs:
+    1. Deploy slice infrastructure
+    2. Configure L3 networks and routing
+    3. Configure persistent network interfaces
+    4. Setup passwordless SSH
+    5. Configure SELinux (if specified in topology)
+    6. Setup Ansible environment (if requested)
+
+    Args:
+        topology: Site topology model
+        slice_name: Name for the slice
+        configure_selinux: If True, applies SELinux settings from topology
+        setup_ansible: If True, sets up Ansible environment
+        use_timestamp: If True, adds timestamp to slice name
+
+    Returns:
+        FABRIC slice object or None on failure
+    """
+    from .selinux_management import configure_selinux_from_topology
+    from .ansible_setup import setup_ansible_environment
+
+    try:
+        # Step 1: Deploy slice
+        print("="*70)
+        print("STEP 1: Deploying FABRIC Slice")
+        print("="*70)
+        slice = deploy_topology_to_fabric(topology, slice_name, use_timestamp)
+        if not slice:
+            return None
+
+        # Step 2: Configure L3 networks
+        print("\n" + "="*70)
+        print("STEP 2: Configuring L3 Networks")
+        print("="*70)
+        configure_l3_networks(slice, topology)
+
+        # Step 3: Configure persistent network interfaces
+        print("\n" + "="*70)
+        print("STEP 3: Configuring Network Interfaces")
+        print("="*70)
+        configure_node_interfaces(slice, topology)
+
+        # Step 4: Setup SSH
+        print("\n" + "="*70)
+        print("STEP 4: Setting up Passwordless SSH")
+        print("="*70)
+        setup_passwordless_ssh(slice)
+
+        # Step 5: Configure SELinux
+        if configure_selinux:
+            print("\n" + "="*70)
+            print("STEP 5: Configuring SELinux")
+            print("="*70)
+            configure_selinux_from_topology(slice, topology, persistent=True)
+
+        # Step 6: Setup Ansible
+        if setup_ansible:
+            print("\n" + "="*70)
+            print("STEP 6: Setting up Ansible Environment")
+            print("="*70)
+            setup_ansible_environment(slice, topology)
+
+        print("\n" + "="*70)
+        print("✅ DEPLOYMENT COMPLETE")
+        print("="*70)
+        print(f"\nSlice '{slice.get_name()}' is ready!")
+
+        return slice
+
+    except Exception as e:
+        logger.error(f"Deployment failed: {e}")
+        print(f"\n❌ Deployment failed: {e}")
+        return None
+
+
 def get_slice(slice_name: str) -> Optional[object]:
     """
     Retrieve an existing FABRIC slice by name.

@@ -388,3 +388,117 @@ def display_selinux_summary(slice, topology: SiteTopology) -> None:
         tablefmt="fancy_grid"
     ))
     print("\n" + "="*70 + "\n")
+
+def configure_selinux_from_topology(
+    slice,
+    topology: SiteTopology,
+    persistent: bool = True,
+    apply_immediately: bool = True
+) -> Dict[str, bool]:
+    """
+    Configure SELinux on nodes based on topology specifications.
+
+    Reads selinux.mode from each node's specific section and applies it.
+    Only configures nodes that have selinux mode specified in topology.
+
+    Args:
+        slice: FABRIC slice object
+        topology: Site topology model
+        persistent: If True, updates config file (survives reboot)
+        apply_immediately: If True, also sets runtime mode (when possible)
+
+    Returns:
+        Dictionary mapping node names to success status
+    """
+    logger.info("Configuring SELinux based on topology specifications")
+    print("\n⚙️  Configuring SELinux from topology...\n")
+
+    results = {}
+    nodes_to_configure = []
+
+    # Find nodes with SELinux configuration
+    for node in topology.site_topology_nodes.iter_nodes():
+        selinux_mode = node.specific.get_selinux_mode()
+        if selinux_mode:
+            nodes_to_configure.append((node, selinux_mode))
+
+    if not nodes_to_configure:
+        print("ℹ️  No nodes have SELinux configuration in topology")
+        logger.info("No SELinux configuration found in topology")
+        return {}
+
+    print(f"📋 Found {len(nodes_to_configure)} node(s) with SELinux configuration\n")
+
+    # Configure each node
+    for node, mode_str in nodes_to_configure:
+        print(f"🔧 Configuring {node.name} (mode: {mode_str})...")
+
+        # Validate mode
+        try:
+            mode = SELinuxMode(mode_str.lower())
+        except ValueError:
+            logger.error(f"Invalid SELinux mode '{mode_str}' for {node.name}")
+            print(f"   ❌ Invalid mode '{mode_str}' (must be: enforcing, permissive, or disabled)")
+            results[node.name] = False
+            print()
+            continue
+
+        try:
+            fab_node = slice.get_node(node.name)
+
+            # Check if SELinux is available
+            if not check_selinux_available(fab_node):
+                logger.info(f"SELinux not available on {node.name}, skipping")
+                print(f"   ℹ️  SELinux not available (not a RHEL-based system)")
+                results[node.name] = None  # Not an error, just N/A
+                print()
+                continue
+
+            # Set persistent configuration
+            if persistent:
+                success = set_selinux_mode_persistent(fab_node, node.name, mode)
+            else:
+                success = False
+
+            # Also set runtime if requested and not disabling
+            if apply_immediately and mode != SELinuxMode.DISABLED:
+                runtime_success = set_selinux_mode_runtime(fab_node, node.name, mode)
+                if not success:  # If persistent failed, at least check runtime
+                    success = runtime_success
+
+            results[node.name] = success
+
+            if success:
+                print(f"   ✅ SELinux configured to {mode.value}")
+            else:
+                print(f"   ❌ Failed to configure SELinux")
+
+        except Exception as e:
+            logger.error(f"Failed to configure SELinux on {node.name}: {e}")
+            print(f"   ❌ Error: {e}")
+            results[node.name] = False
+
+        print()
+
+    # Summary
+    successful = sum(1 for v in results.values() if v is True)
+    skipped = sum(1 for v in results.values() if v is None)
+    total = len(results)
+
+    print(f"📊 Summary:")
+    print(f"   ✅ Configured: {successful}/{total}")
+    if skipped > 0:
+        print(f"   ℹ️  Skipped (N/A): {skipped}/{total}")
+
+    # Check if reboot needed
+    needs_reboot = any(
+        mode_str.lower() == 'disabled'
+        for _, mode_str in nodes_to_configure
+    )
+
+    if needs_reboot and persistent:
+        print("\n⚠️  Note: Nodes configured with 'disabled' require reboot for full effect.")
+
+    print()
+
+    return results

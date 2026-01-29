@@ -5,7 +5,7 @@ A comprehensive, type-safe Python framework for managing FABRIC testbed
 generic clusters and slices with support for DPUs, FPGAs, and advanced networking.
 """
 
-__version__ = "1.0.10"
+__version__ = "1.0.11"
 __author__ = "Mert Cevik"
 __email__ = "mcevik@renci.org"
 
@@ -24,6 +24,7 @@ from .deployment import (
     get_slice,
     delete_slice,
     check_slices,
+    deploy_and_configure_slice,
 )
 
 from .network_config import (
@@ -49,6 +50,7 @@ from .selinux_management import (
     set_selinux_mode_all_nodes,
     set_selinux_permissive_for_openstack,
     display_selinux_summary,
+    configure_selinux_from_topology,
     SELinuxManagementError
 )
 
