@@ -43,6 +43,15 @@ from .ansible_setup import (
     test_ansible_connectivity,
 )
 
+from .selinux_management import (
+    SELinuxMode,
+    check_selinux_status_all_nodes,
+    set_selinux_mode_all_nodes,
+    set_selinux_permissive_for_openstack,
+    display_selinux_summary,
+    SELinuxManagementError
+)
+
 from .topology_viewer import (
     print_topology_summary,
     print_compact_summary,
