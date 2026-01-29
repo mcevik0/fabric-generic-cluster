@@ -5,7 +5,7 @@ A comprehensive, type-safe Python framework for managing FABRIC testbed
 generic clusters and slices with support for DPUs, FPGAs, and advanced networking.
 """
 
-__version__ = "1.0.9"
+__version__ = "1.0.10"
 __author__ = "Mert Cevik"
 __email__ = "mcevik@renci.org"
 
