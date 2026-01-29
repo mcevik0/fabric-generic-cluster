@@ -195,6 +195,7 @@ class NodeSpecific(BaseModel):
     """Application-specific node configuration."""
     openstack: OpenStackRoles = Field(default_factory=OpenStackRoles)
     ansible: Optional[Dict[str, str]] = Field(default=None, description="Ansible configuration")
+    selinux: Optional[Dict[str, str]] = Field(default=None, description="SELinux configuration")
     postboot: Optional[str] = Field(default=None, description="Post-boot commands to execute")
     
     def has_postboot_commands(self) -> bool:
@@ -231,6 +232,21 @@ class NodeSpecific(BaseModel):
         # Support comma-separated roles
         roles = [r.strip() for r in role.split(',') if r.strip()]
         return roles
+    
+    def get_selinux_mode(self) -> Optional[str]:
+        """
+        Get the desired SELinux mode for this node.
+        
+        Returns:
+            SELinux mode string ('enforcing', 'permissive', 'disabled') or None
+        """
+        if not self.selinux:
+            return None
+        return self.selinux.get('mode', None)
+    
+    def has_selinux_config(self) -> bool:
+        """Check if SELinux configuration is specified."""
+        return bool(self.selinux and self.selinux.get('mode'))
 
 
 class Node(BaseModel):
