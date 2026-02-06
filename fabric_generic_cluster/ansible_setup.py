@@ -400,6 +400,7 @@ def get_ansible_user_for_os(os_image: str) -> str:
         return 'ubuntu'
 
 
+
 def generate_ansible_inventory(slice, topology: SiteTopology) -> str:
     """
     Generate an Ansible inventory file based on the topology.
@@ -412,6 +413,7 @@ def generate_ansible_inventory(slice, topology: SiteTopology) -> str:
     - Custom Ansible roles from topology (role_webserver, role_database, etc.)
     
     Each node gets the appropriate ansible_user based on its OS image.
+    Management network can be specified via ansible.management_network in topology.
     
     Args:
         slice: FABRIC slice object
@@ -445,27 +447,57 @@ def generate_ansible_inventory(slice, topology: SiteTopology) -> str:
     role_groups = {}  # {role_name: [node_entries]}
     
     for node in topology.site_topology_nodes.iter_nodes():
-        # Get management IP (first available IP from any interface)
+        # Get management IP - try specified management network first, then fall back
         management_ip = None
+        management_network_used = None
+        
         try:
             fab_node = slice.get_node(node.name)
             
-            # Try to get IP from first network interface
-            for nic_name, iface_name, iface in node.get_all_interfaces():
-                if iface.binding:
-                    try:
-                        fab_iface = fab_node.get_interface(network_name=iface.binding)
-                        ip = fab_iface.get_ip_addr()
-                        if ip:
-                            management_ip = ip.split('/')[0] if '/' in ip else ip
-                            break
-                    except:
-                        continue
+            # Check if a specific management network is configured
+            mgmt_network_binding = node.get_management_network_binding()
+            
+            if mgmt_network_binding:
+                # Use the specified management network
+                logger.info(f"Using specified management network '{mgmt_network_binding}' for {node.name}")
+                print(f"   🔍 {node.name}: Using management network '{mgmt_network_binding}'")
+                
+                try:
+                    fab_iface = fab_node.get_interface(network_name=mgmt_network_binding)
+                    ip = fab_iface.get_ip_addr()
+                    if ip:
+                        management_ip = ip.split('/')[0] if '/' in ip else ip
+                        management_network_used = mgmt_network_binding
+                        logger.debug(f"Got management IP {management_ip} from {mgmt_network_binding}")
+                except Exception as e:
+                    logger.warning(f"Could not get IP from management network '{mgmt_network_binding}' for {node.name}: {e}")
+                    print(f"   ⚠️  Could not get IP from management network '{mgmt_network_binding}': {e}")
+            
+            # Fall back to first available interface if management network not specified or failed
+            if not management_ip:
+                logger.debug(f"Falling back to first available interface for {node.name}")
+                
+                for nic_name, iface_name, iface in node.get_all_interfaces():
+                    if iface.binding:
+                        try:
+                            fab_iface = fab_node.get_interface(network_name=iface.binding)
+                            ip = fab_iface.get_ip_addr()
+                            if ip:
+                                management_ip = ip.split('/')[0] if '/' in ip else ip
+                                management_network_used = iface.binding
+                                logger.debug(f"Using fallback network '{iface.binding}' for {node.name}")
+                                print(f"   ℹ️  {node.name}: Using first available network '{iface.binding}'")
+                                break
+                        except:
+                            continue
+                            
         except Exception as e:
             logger.warning(f"Could not get IP for {node.name}: {e}")
+            print(f"   ⚠️  Error getting IP for {node.name}: {e}")
         
         if not management_ip:
-            logger.warning(f"No IP found for {node.name}, skipping")
+            logger.warning(f"No IP found for {node.name}, skipping from inventory")
+            print(f"   ❌ No IP found for {node.name}, skipping")
             continue
         
         # Determine ansible_user based on OS image
@@ -473,6 +505,10 @@ def generate_ansible_inventory(slice, topology: SiteTopology) -> str:
         
         # Build node entry with ansible_user
         node_entry = f"{node.hostname} ansible_host={management_ip} ansible_user={ansible_user}"
+        
+        # Add comment showing which network is used (helpful for debugging)
+        if management_network_used:
+            node_entry += f"  # via {management_network_used}"
         
         # Add to all_nodes
         all_nodes.append(node_entry)
