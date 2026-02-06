@@ -42,6 +42,9 @@ from .ssh_setup import (
 from .ansible_setup import (
     setup_ansible_environment,
     test_ansible_connectivity,
+    generate_ansible_inventory_from_topology,
+    generate_inventory_template_from_yaml,
+    save_inventory_to_file,
 )
 
 from .selinux_management import (
