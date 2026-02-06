@@ -233,6 +233,19 @@ class NodeSpecific(BaseModel):
         roles = [r.strip() for r in role.split(',') if r.strip()]
         return roles
     
+    def get_ansible_management_network(self) -> Optional[str]:
+        """
+        Get the management network name for Ansible.
+        
+        This specifies which network should be used for Ansible management traffic.
+        
+        Returns:
+            Network name (binding) or None if not specified
+        """
+        if not self.ansible:
+            return None
+        return self.ansible.get('management_network', None)
+    
     def get_selinux_mode(self) -> Optional[str]:
         """
         Get the desired SELinux mode for this node.
@@ -329,6 +342,30 @@ class Node(BaseModel):
     def has_worker_constraint(self) -> bool:
         """Check if this node has a specific worker host constraint."""
         return bool(self.worker and self.worker.strip())
+
+    def get_management_network_binding(self) -> Optional[str]:
+        """
+        Get the network binding to use for management (Ansible) traffic.
+        
+        Returns:
+            Network binding name, or None if not specified
+        """
+        return self.specific.get_ansible_management_network()
+    
+    def get_interface_for_network_binding(self, network_binding: str) -> Optional[tuple]:
+        """
+        Find the interface that's bound to a specific network.
+        
+        Args:
+            network_binding: Network name (e.g., 'fabnetv4-mgmt')
+            
+        Returns:
+            Tuple of (device_name, interface) or None if not found
+        """
+        for nic_name, iface_name, iface in self.get_all_interfaces():
+            if iface.binding == network_binding:
+                return (nic_name, iface)
+        return None
 
 
 # ============================================================================
