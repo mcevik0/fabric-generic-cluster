@@ -968,3 +968,340 @@ def test_ansible_connectivity(slice, topology: SiteTopology) -> Dict[str, bool]:
         logger.error(f"Failed to test connectivity: {e}")
         print(f"❌ Failed to test connectivity: {e}")
         return {}
+
+def generate_ansible_inventory_from_topology(
+    topology: SiteTopology,
+    use_placeholder_ips: bool = True,
+    placeholder_subnet: str = "10.10.10.0/24"
+) -> str:
+    """
+    Generate an Ansible inventory file directly from topology (without querying FABRIC).
+    
+    This is useful for:
+    - Pre-deployment planning
+    - Generating inventory templates
+    - Offline inventory generation
+    
+    Uses IP addresses from the topology YAML if available, otherwise uses placeholder IPs.
+    
+    Args:
+        topology: Site topology model
+        use_placeholder_ips: If True, generates placeholder IPs when not specified
+        placeholder_subnet: Subnet to use for generating placeholder IPs
+        
+    Returns:
+        String containing the inventory file content
+    """
+    import ipaddress
+    
+    logger.info("Generating Ansible inventory from topology (offline mode)")
+    
+    inventory_lines = ["# Ansible Inventory - Generated from topology (offline mode)"]
+    inventory_lines.append(f"# Note: IP addresses may be placeholders or from topology configuration")
+    inventory_lines.append(f"# Groups: all_nodes, openstack_*, os_*, site_*, role_*\n")
+    
+    # Collections for different groupings
+    all_nodes = []
+    
+    # OpenStack role groups
+    control_nodes = []
+    network_nodes = []
+    compute_nodes = []
+    storage_nodes = []
+    
+    # OS-based groups
+    os_groups = {}
+    
+    # Site-based groups
+    site_groups = {}
+    
+    # Custom Ansible role groups
+    role_groups = {}
+    
+    # IP address generator for placeholder IPs
+    if use_placeholder_ips:
+        network = ipaddress.IPv4Network(placeholder_subnet)
+        ip_generator = network.hosts()
+        next(ip_generator)  # Skip .1 (typically gateway)
+    
+    node_counter = 0
+    
+    for node in topology.site_topology_nodes.iter_nodes():
+        node_counter += 1
+        
+        # Get management IP from topology
+        management_ip = None
+        management_network_used = None
+        ip_source = None
+        
+        # Check if a specific management network is configured
+        mgmt_network_binding = node.get_management_network_binding()
+        
+        if mgmt_network_binding:
+            # Try to get IP from the specified management network interface
+            logger.debug(f"Looking for management network '{mgmt_network_binding}' on {node.name}")
+            
+            for nic_name, iface_name, iface in node.get_all_interfaces():
+                if iface.binding == mgmt_network_binding:
+                    # Check if IP is configured in topology
+                    if iface.ipv4.address:
+                        # Use configured IPv4 address
+                        ip_str = iface.ipv4.address
+                        management_ip = ip_str.split('/')[0] if '/' in ip_str else ip_str
+                        management_network_used = mgmt_network_binding
+                        ip_source = "topology_config"
+                        logger.debug(f"Using configured IP {management_ip} from topology")
+                        break
+                    elif iface.ipv6.address:
+                        # Use configured IPv6 address
+                        ip_str = iface.ipv6.address
+                        management_ip = ip_str.split('/')[0] if '/' in ip_str else ip_str
+                        management_network_used = mgmt_network_binding
+                        ip_source = "topology_config"
+                        logger.debug(f"Using configured IPv6 {management_ip} from topology")
+                        break
+        
+        # Fall back to first interface with configured IP if management network not specified
+        if not management_ip:
+            logger.debug(f"Checking all interfaces for configured IP on {node.name}")
+            
+            for nic_name, iface_name, iface in node.get_all_interfaces():
+                if iface.binding:
+                    if iface.ipv4.address:
+                        ip_str = iface.ipv4.address
+                        management_ip = ip_str.split('/')[0] if '/' in ip_str else ip_str
+                        management_network_used = iface.binding
+                        ip_source = "topology_config"
+                        logger.debug(f"Using first configured IP {management_ip} from {iface.binding}")
+                        break
+                    elif iface.ipv6.address:
+                        ip_str = iface.ipv6.address
+                        management_ip = ip_str.split('/')[0] if '/' in ip_str else ip_str
+                        management_network_used = iface.binding
+                        ip_source = "topology_config"
+                        logger.debug(f"Using first configured IPv6 {management_ip} from {iface.binding}")
+                        break
+        
+        # Generate placeholder IP if no configured IP found
+        if not management_ip and use_placeholder_ips:
+            try:
+                management_ip = str(next(ip_generator))
+                ip_source = "placeholder"
+                
+                # Try to identify the network that would be used
+                if mgmt_network_binding:
+                    management_network_used = mgmt_network_binding
+                else:
+                    # Use first available binding
+                    for nic_name, iface_name, iface in node.get_all_interfaces():
+                        if iface.binding:
+                            management_network_used = iface.binding
+                            break
+                
+                logger.debug(f"Generated placeholder IP {management_ip} for {node.name}")
+            except StopIteration:
+                logger.error(f"Ran out of placeholder IPs in subnet {placeholder_subnet}")
+                management_ip = "PLACEHOLDER_IP_NEEDED"
+                ip_source = "error"
+        
+        if not management_ip:
+            logger.warning(f"No IP found or generated for {node.name}, using placeholder")
+            management_ip = f"PLACEHOLDER_IP_{node_counter}"
+            ip_source = "placeholder_text"
+        
+        # Determine ansible_user based on OS image
+        ansible_user = get_ansible_user_for_os(node.capacity.os)
+        
+        # Build node entry with ansible_user and comment
+        node_entry = f"{node.hostname} ansible_host={management_ip} ansible_user={ansible_user}"
+        
+        # Add informative comment
+        comment_parts = []
+        if management_network_used:
+            comment_parts.append(f"via {management_network_used}")
+        if ip_source == "placeholder":
+            comment_parts.append("PLACEHOLDER IP - UPDATE AFTER DEPLOYMENT")
+        elif ip_source == "placeholder_text":
+            comment_parts.append("NO IP - MUST BE CONFIGURED")
+        elif ip_source == "topology_config":
+            comment_parts.append("from topology config")
+        
+        if comment_parts:
+            node_entry += f"  # {', '.join(comment_parts)}"
+        
+        # Add to all_nodes
+        all_nodes.append(node_entry)
+        
+        # Add to OpenStack role groups
+        if node.specific.openstack.is_control():
+            control_nodes.append(node_entry)
+        if node.specific.openstack.is_network():
+            network_nodes.append(node_entry)
+        if node.specific.openstack.is_compute():
+            compute_nodes.append(node_entry)
+        if node.specific.openstack.is_storage():
+            storage_nodes.append(node_entry)
+        
+        # Add to OS-based groups
+        os_type = _extract_os_name(node.capacity.os)
+        if os_type not in os_groups:
+            os_groups[os_type] = []
+        os_groups[os_type].append(node_entry)
+        
+        # Add to site-based groups
+        if node.site:
+            site_name = node.site.strip()
+            if site_name not in site_groups:
+                site_groups[site_name] = []
+            site_groups[site_name].append(node_entry)
+        
+        # Add to custom Ansible role groups
+        ansible_roles = node.specific.get_ansible_roles()
+        for role_name in ansible_roles:
+            if role_name not in role_groups:
+                role_groups[role_name] = []
+            role_groups[role_name].append(node_entry)
+    
+    # Build inventory file
+    
+    # All nodes group
+    inventory_lines.append("# ============================================")
+    inventory_lines.append("# ALL NODES")
+    inventory_lines.append("# ============================================")
+    inventory_lines.append("[all_nodes]")
+    inventory_lines.extend(all_nodes)
+    
+    # OpenStack role groups
+    if control_nodes or network_nodes or compute_nodes or storage_nodes:
+        inventory_lines.append("")
+        inventory_lines.append("# ============================================")
+        inventory_lines.append("# OPENSTACK ROLES")
+        inventory_lines.append("# ============================================")
+        
+        if control_nodes:
+            inventory_lines.append("[openstack_control]")
+            inventory_lines.extend(control_nodes)
+            inventory_lines.append("")
+        
+        if network_nodes:
+            inventory_lines.append("[openstack_network]")
+            inventory_lines.extend(network_nodes)
+            inventory_lines.append("")
+        
+        if compute_nodes:
+            inventory_lines.append("[openstack_compute]")
+            inventory_lines.extend(compute_nodes)
+            inventory_lines.append("")
+        
+        if storage_nodes:
+            inventory_lines.append("[openstack_storage]")
+            inventory_lines.extend(storage_nodes)
+    
+    # OS-based groups
+    if os_groups:
+        inventory_lines.append("")
+        inventory_lines.append("# ============================================")
+        inventory_lines.append("# OS-BASED GROUPS")
+        inventory_lines.append("# ============================================")
+        for os_name in sorted(os_groups.keys()):
+            inventory_lines.append(f"[os_{os_name}]")
+            inventory_lines.extend(os_groups[os_name])
+            inventory_lines.append("")
+    
+    # Site-based groups
+    if site_groups:
+        inventory_lines.append("# ============================================")
+        inventory_lines.append("# SITE-BASED GROUPS")
+        inventory_lines.append("# ============================================")
+        for site_name in sorted(site_groups.keys()):
+            inventory_lines.append(f"[site_{site_name}]")
+            inventory_lines.extend(site_groups[site_name])
+            inventory_lines.append("")
+    
+    # Custom Ansible role groups
+    if role_groups:
+        inventory_lines.append("# ============================================")
+        inventory_lines.append("# CUSTOM ANSIBLE ROLES")
+        inventory_lines.append("# ============================================")
+        for role_name in sorted(role_groups.keys()):
+            inventory_lines.append(f"[role_{role_name}]")
+            inventory_lines.extend(role_groups[role_name])
+            inventory_lines.append("")
+    
+    # Add common variables
+    inventory_lines.append("# ============================================")
+    inventory_lines.append("# GLOBAL VARIABLES")
+    inventory_lines.append("# ============================================")
+    inventory_lines.append("[all_nodes:vars]")
+    inventory_lines.append("ansible_python_interpreter=/usr/bin/python3")
+    inventory_lines.append("ansible_ssh_common_args='-o StrictHostKeyChecking=no'")
+    
+    return "\n".join(inventory_lines)
+
+
+def save_inventory_to_file(inventory_content: str, filepath: str) -> bool:
+    """
+    Save inventory content to a file.
+    
+    Args:
+        inventory_content: Inventory file content
+        filepath: Path where to save the file
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        with open(filepath, 'w') as f:
+            f.write(inventory_content)
+        logger.info(f"Inventory saved to {filepath}")
+        print(f"✅ Inventory saved to {filepath}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save inventory to {filepath}: {e}")
+        print(f"❌ Failed to save inventory: {e}")
+        return False
+
+
+def generate_inventory_template_from_yaml(
+    yaml_path: str,
+    output_path: str = "inventory_template.ini",
+    use_placeholder_ips: bool = True,
+    placeholder_subnet: str = "10.10.10.0/24"
+) -> bool:
+    """
+    Convenience function to generate inventory template directly from YAML file.
+    
+    Args:
+        yaml_path: Path to topology YAML file
+        output_path: Where to save the generated inventory
+        use_placeholder_ips: Generate placeholder IPs if not in topology
+        placeholder_subnet: Subnet for placeholder IPs
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    from .models import load_topology_from_yaml_file
+    
+    try:
+        print(f"\n📋 Generating inventory template from {yaml_path}...\n")
+        
+        # Load topology
+        topology = load_topology_from_yaml_file(yaml_path)
+        
+        # Generate inventory
+        inventory_content = generate_ansible_inventory_from_topology(
+            topology,
+            use_placeholder_ips=use_placeholder_ips,
+            placeholder_subnet=placeholder_subnet
+        )
+        
+        # Save to file
+        save_inventory_to_file(inventory_content, output_path)
+        
+        print(f"\n💡 Review {output_path} and update placeholder IPs after deployment")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to generate inventory template: {e}")
+        print(f"❌ Error: {e}")
+        return False
