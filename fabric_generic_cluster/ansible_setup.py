@@ -741,7 +741,7 @@ def generate_host_vars_from_topology(fab_node, topology: SiteTopology) -> bool:
         
         # Parse ansible roles
         ansible_roles = []
-        if node.specific.ansible and node.specific.ansible.role:
+        if node.specific.ansible and hasattr(node.specific.ansible, 'role') and node.specific.ansible.role:
             ansible_roles = [r.strip() for r in node.specific.ansible.role.split(',') if r.strip()]
         
         # Build host_vars content
@@ -777,11 +777,11 @@ os_full: "{os_string}"
         if node.specific.ansible:
             host_vars_content += "\n# Ansible configuration\nansible_config:\n"
             
-            if node.specific.ansible.control:
+            if hasattr(node.specific.ansible, 'control') and node.specific.ansible.control:
                 is_control = node.specific.ansible.control.lower() == 'true'
                 host_vars_content += f"  is_control_node: {str(is_control).lower()}\n"
             
-            if node.specific.ansible.management_network:
+            if hasattr(node.specific.ansible, 'management_network') and node.specific.ansible.management_network:
                 host_vars_content += f'  management_network: "{node.specific.ansible.management_network}"\n'
             
             if ansible_roles:
@@ -790,7 +790,7 @@ os_full: "{os_string}"
                     host_vars_content += f"    - {role}\n"
         
         # Add SELinux configuration
-        if node.specific.selinux and node.specific.selinux.mode:
+        if node.specific.selinux and hasattr(node.specific.selinux, 'mode') and node.specific.selinux.mode:
             mode = node.specific.selinux.mode.strip()
             if mode:
                 host_vars_content += f'\n# SELinux configuration\nselinux_target_state: "{mode}"\n'
@@ -798,13 +798,13 @@ os_full: "{os_string}"
         # Add OpenStack roles
         if node.specific.openstack:
             openstack_roles = {}
-            if node.specific.openstack.control and node.specific.openstack.control.lower() == 'true':
+            if hasattr(node.specific.openstack, 'control') and node.specific.openstack.control and node.specific.openstack.control.lower() == 'true':
                 openstack_roles['control'] = True
-            if node.specific.openstack.compute and node.specific.openstack.compute.lower() == 'true':
+            if hasattr(node.specific.openstack, 'compute') and node.specific.openstack.compute and node.specific.openstack.compute.lower() == 'true':
                 openstack_roles['compute'] = True
-            if node.specific.openstack.network and node.specific.openstack.network.lower() == 'true':
+            if hasattr(node.specific.openstack, 'network') and node.specific.openstack.network and node.specific.openstack.network.lower() == 'true':
                 openstack_roles['network'] = True
-            if node.specific.openstack.storage and node.specific.openstack.storage.lower() == 'true':
+            if hasattr(node.specific.openstack, 'storage') and node.specific.openstack.storage and node.specific.openstack.storage.lower() == 'true':
                 openstack_roles['storage'] = True
             
             if openstack_roles:
