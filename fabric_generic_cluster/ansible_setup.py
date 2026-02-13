@@ -694,12 +694,185 @@ def deploy_ansible_inventory(slice, topology: SiteTopology) -> bool:
         print(inventory_content)
         print("=" * 70)
         
+        # Generate host_vars from topology
+        if not generate_host_vars_from_topology(fab_node, topology):
+            logger.warning("Failed to generate host variables, continuing...")
+        
         return True
         
     except Exception as e:
         logger.error(f"Failed to deploy inventory: {e}")
         print(f"❌ Failed to deploy inventory: {e}")
         return False
+
+
+
+
+def generate_host_vars_from_topology(fab_node, topology: SiteTopology) -> bool:
+    """
+    Generate host variable files from topology information on the control node.
+    
+    Creates detailed host_vars YAML files for each node based on the topology
+    model, including hardware specs, ansible roles, network info, etc.
+    
+    Args:
+        fab_node: FABRIC control node object
+        topology: Site topology model
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    logger.info("Generating host variables from topology")
+    print("\n📝 Generating host variables from topology...\n")
+    
+    # Create host_vars directory
+    fab_node.execute("mkdir -p ~/ansible/host_vars")
+    
+    generated_count = 0
+    
+    for node in topology.site_topology_nodes.iter_nodes():
+        hostname = node.hostname
+        
+        # Parse OS information
+        os_string = node.capacity.os if node.capacity.os else "unknown"
+        os_parts = os_string.replace("default_", "").split("_")
+        os_name = os_parts[0].capitalize() if os_parts else "Unknown"
+        os_version = os_parts[1] if len(os_parts) > 1 else ""
+        
+        # Parse ansible roles
+        ansible_roles = []
+        if node.specific.ansible and node.specific.ansible.role:
+            ansible_roles = [r.strip() for r in node.specific.ansible.role.split(',') if r.strip()]
+        
+        # Build host_vars content
+        host_vars_content = f"""---
+# host_vars/{hostname}.yml
+# Host-specific variables for {hostname}
+# Auto-generated from topology
+
+# Host identification
+hostname: "{hostname}"
+fqdn: "{hostname}.fabric.net"
+
+# Site information
+site_name: "{node.site if node.site else 'Unknown'}"
+"""
+        
+        if node.worker:
+            host_vars_content += f'fabric_worker: "{node.worker}"\n'
+        
+        host_vars_content += f"""
+# Hardware specifications (for reference)
+cpu_cores: {node.capacity.cpu if node.capacity.cpu else 0}
+memory_gb: {node.capacity.ram if node.capacity.ram else 0}
+disk_size_gb: {node.capacity.disk if node.capacity.disk else 0}
+
+# Operating System
+os_name: "{os_name}"
+os_version: "{os_version}"
+os_full: "{os_string}"
+"""
+        
+        # Add ansible configuration
+        if node.specific.ansible:
+            host_vars_content += "\n# Ansible configuration\nansible_config:\n"
+            
+            if node.specific.ansible.control:
+                is_control = node.specific.ansible.control.lower() == 'true'
+                host_vars_content += f"  is_control_node: {str(is_control).lower()}\n"
+            
+            if node.specific.ansible.management_network:
+                host_vars_content += f'  management_network: "{node.specific.ansible.management_network}"\n'
+            
+            if ansible_roles:
+                host_vars_content += "  roles:\n"
+                for role in ansible_roles:
+                    host_vars_content += f"    - {role}\n"
+        
+        # Add SELinux configuration
+        if node.specific.selinux and node.specific.selinux.mode:
+            mode = node.specific.selinux.mode.strip()
+            if mode:
+                host_vars_content += f'\n# SELinux configuration\nselinux_target_state: "{mode}"\n'
+        
+        # Add OpenStack roles
+        if node.specific.openstack:
+            openstack_roles = {}
+            if node.specific.openstack.control and node.specific.openstack.control.lower() == 'true':
+                openstack_roles['control'] = True
+            if node.specific.openstack.compute and node.specific.openstack.compute.lower() == 'true':
+                openstack_roles['compute'] = True
+            if node.specific.openstack.network and node.specific.openstack.network.lower() == 'true':
+                openstack_roles['network'] = True
+            if node.specific.openstack.storage and node.specific.openstack.storage.lower() == 'true':
+                openstack_roles['storage'] = True
+            
+            if openstack_roles:
+                host_vars_content += "\n# OpenStack roles\nopenstack_roles:\n"
+                for key, value in openstack_roles.items():
+                    host_vars_content += f"  {key}: {str(value).lower()}\n"
+        
+        # Add network interfaces
+        has_interfaces = False
+        interfaces_content = ""
+        if node.pci and node.pci.network:
+            for nic_name, nic in node.pci.network.items():
+                if nic.interfaces:
+                    for iface_name, iface in nic.interfaces.items():
+                        if not has_interfaces:
+                            has_interfaces = True
+                            interfaces_content = "\n# Network interfaces\nnetwork_interfaces:\n"
+                        
+                        interfaces_content += f'  - name: "{iface_name}"\n'
+                        interfaces_content += f'    device: "{iface.device if iface.device else ""}"\n'
+                        interfaces_content += f'    connection: "{iface.connection if iface.connection else ""}"\n'
+                        interfaces_content += f'    binding: "{iface.binding if iface.binding else ""}"\n'
+        
+        if has_interfaces:
+            host_vars_content += interfaces_content
+        
+        # Add monitoring tags
+        monitoring_tags = ['fabric-node']
+        if ansible_roles:
+            monitoring_tags.extend(ansible_roles)
+        if node.site:
+            monitoring_tags.append(f"site-{node.site.lower()}")
+        
+        host_vars_content += "\n# Monitoring\nmonitoring_tags:\n"
+        for tag in monitoring_tags:
+            host_vars_content += f"  - {tag}\n"
+        
+        # Add backup and maintenance
+        host_vars_content += f"""
+# Backup configuration
+backup_enabled: true
+backup_schedule: "0 2 * * *"
+
+# Maintenance
+maintenance_window: "Sunday 02:00-04:00"
+
+# Add host-specific overrides below
+"""
+        
+        # Write to control node
+        try:
+            # Escape content for shell
+            escaped_content = host_vars_content.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$')
+            
+            fab_node.execute(f'cat > ~/ansible/host_vars/{hostname}.yml << "EOF"\n{host_vars_content}\nEOF')
+            
+            print(f"   ✓ Generated: {hostname}.yml")
+            generated_count += 1
+            
+        except Exception as e:
+            logger.error(f"Failed to write host_vars for {hostname}: {e}")
+            print(f"   ✗ Failed: {hostname}.yml - {e}")
+            return False
+    
+    print(f"\n✅ Generated {generated_count} host variable file(s)\n")
+    logger.info(f"Generated {generated_count} host variable files")
+    
+    return True
 
 
 def create_ansible_config(slice, topology: SiteTopology) -> bool:
