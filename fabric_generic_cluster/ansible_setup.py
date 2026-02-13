@@ -812,24 +812,160 @@ os_full: "{os_string}"
                 for key, value in openstack_roles.items():
                     host_vars_content += f"  {key}: {str(value).lower()}\n"
         
-        # Add network interfaces
+        # Add network interfaces with full configuration
         has_interfaces = False
         interfaces_content = ""
         if node.pci and node.pci.network:
+            network_interfaces = []
             for nic_name, nic in node.pci.network.items():
                 if nic.interfaces:
                     for iface_name, iface in nic.interfaces.items():
-                        if not has_interfaces:
-                            has_interfaces = True
-                            interfaces_content = "\n# Network interfaces\nnetwork_interfaces:\n"
+                        interface_info = {
+                            'name': iface_name,
+                            'device': iface.device if iface.device else "",
+                            'connection': iface.connection if iface.connection else "",
+                            'binding': iface.binding if iface.binding else "",
+                            'nic_model': nic.model if hasattr(nic, 'model') and nic.model else "",
+                        }
                         
-                        interfaces_content += f'  - name: "{iface_name}"\n'
-                        interfaces_content += f'    device: "{iface.device if iface.device else ""}"\n'
-                        interfaces_content += f'    connection: "{iface.connection if iface.connection else ""}"\n'
-                        interfaces_content += f'    binding: "{iface.binding if iface.binding else ""}"\n'
+                        # Add IPv4 configuration if present
+                        if hasattr(iface, 'ipv4') and iface.ipv4:
+                            ipv4_config = {}
+                            if hasattr(iface.ipv4, 'address') and iface.ipv4.address:
+                                ipv4_config['address'] = iface.ipv4.address
+                            if hasattr(iface.ipv4, 'gateway') and iface.ipv4.gateway:
+                                ipv4_config['gateway'] = iface.ipv4.gateway
+                            if hasattr(iface.ipv4, 'dns') and iface.ipv4.dns:
+                                ipv4_config['dns'] = iface.ipv4.dns
+                            
+                            if ipv4_config:
+                                interface_info['ipv4'] = ipv4_config
+                        
+                        # Add IPv6 configuration if present
+                        if hasattr(iface, 'ipv6') and iface.ipv6:
+                            ipv6_config = {}
+                            if hasattr(iface.ipv6, 'address') and iface.ipv6.address:
+                                ipv6_config['address'] = iface.ipv6.address
+                            if hasattr(iface.ipv6, 'gateway') and iface.ipv6.gateway:
+                                ipv6_config['gateway'] = iface.ipv6.gateway
+                            if hasattr(iface.ipv6, 'dns') and iface.ipv6.dns:
+                                ipv6_config['dns'] = iface.ipv6.dns
+                            
+                            if ipv6_config:
+                                interface_info['ipv6'] = ipv6_config
+                        
+                        network_interfaces.append(interface_info)
+            
+            if network_interfaces:
+                has_interfaces = True
+                interfaces_content = "\n# Network interfaces\nnetwork_interfaces:\n"
+                for iface in network_interfaces:
+                    interfaces_content += f'  - name: "{iface["name"]}"\n'
+                    interfaces_content += f'    device: "{iface["device"]}"\n'
+                    interfaces_content += f'    connection: "{iface["connection"]}"\n'
+                    interfaces_content += f'    binding: "{iface["binding"]}"\n'
+                    if iface.get('nic_model'):
+                        interfaces_content += f'    nic_model: "{iface["nic_model"]}"\n'
+                    
+                    if 'ipv4' in iface:
+                        interfaces_content += f'    ipv4:\n'
+                        for key, value in iface['ipv4'].items():
+                            interfaces_content += f'      {key}: "{value}"\n'
+                    
+                    if 'ipv6' in iface:
+                        interfaces_content += f'    ipv6:\n'
+                        for key, value in iface['ipv6'].items():
+                            interfaces_content += f'      {key}: "{value}"\n'
         
         if has_interfaces:
             host_vars_content += interfaces_content
+        
+        # Add PCI devices (GPUs, NVMe, DPU, FPGA)
+        pci_devices = {}
+        
+        # Extract GPUs
+        if node.pci and hasattr(node.pci, 'gpu') and node.pci.gpu:
+            gpus = []
+            for gpu_id, gpu in node.pci.gpu.items():
+                gpu_info = {}
+                if hasattr(gpu, 'name') and gpu.name:
+                    gpu_info['name'] = gpu.name
+                if hasattr(gpu, 'model') and gpu.model:
+                    gpu_info['model'] = gpu.model
+                if gpu_info:
+                    gpus.append(gpu_info)
+            if gpus:
+                pci_devices['gpus'] = gpus
+        
+        # Extract NVMe drives
+        if node.pci and hasattr(node.pci, 'nvme') and node.pci.nvme:
+            nvmes = []
+            for nvme_id, nvme in node.pci.nvme.items():
+                nvme_info = {}
+                if hasattr(nvme, 'name') and nvme.name:
+                    nvme_info['name'] = nvme.name
+                if hasattr(nvme, 'model') and nvme.model:
+                    nvme_info['model'] = nvme.model
+                if nvme_info:
+                    nvmes.append(nvme_info)
+            if nvmes:
+                pci_devices['nvme_drives'] = nvmes
+        
+        # Extract DPUs
+        if node.pci and hasattr(node.pci, 'dpu') and node.pci.dpu:
+            dpus = []
+            for dpu_id, dpu in node.pci.dpu.items():
+                dpu_info = {}
+                if hasattr(dpu, 'name') and dpu.name:
+                    dpu_info['name'] = dpu.name
+                if hasattr(dpu, 'model') and dpu.model:
+                    dpu_info['model'] = dpu.model
+                if dpu_info:
+                    dpus.append(dpu_info)
+            if dpus:
+                pci_devices['dpus'] = dpus
+        
+        # Extract FPGAs
+        if node.pci and hasattr(node.pci, 'fpga') and node.pci.fpga:
+            fpgas = []
+            for fpga_id, fpga in node.pci.fpga.items():
+                fpga_info = {}
+                if hasattr(fpga, 'name') and fpga.name:
+                    fpga_info['name'] = fpga.name
+                if hasattr(fpga, 'model') and fpga.model:
+                    fpga_info['model'] = fpga.model
+                if fpga_info:
+                    fpgas.append(fpga_info)
+            if fpgas:
+                pci_devices['fpgas'] = fpgas
+        
+        # Add PCI devices section to host_vars if any found
+        if pci_devices:
+            host_vars_content += "\n# PCI Devices\npci_devices:\n"
+            
+            if 'gpus' in pci_devices:
+                host_vars_content += "  gpus:\n"
+                for gpu in pci_devices['gpus']:
+                    host_vars_content += f'    - name: "{gpu.get("name", "")}"\n'
+                    host_vars_content += f'      model: "{gpu.get("model", "")}"\n'
+            
+            if 'nvme_drives' in pci_devices:
+                host_vars_content += "  nvme_drives:\n"
+                for nvme in pci_devices['nvme_drives']:
+                    host_vars_content += f'    - name: "{nvme.get("name", "")}"\n'
+                    host_vars_content += f'      model: "{nvme.get("model", "")}"\n'
+            
+            if 'dpus' in pci_devices:
+                host_vars_content += "  dpus:\n"
+                for dpu in pci_devices['dpus']:
+                    host_vars_content += f'    - name: "{dpu.get("name", "")}"\n'
+                    host_vars_content += f'      model: "{dpu.get("model", "")}"\n'
+            
+            if 'fpgas' in pci_devices:
+                host_vars_content += "  fpgas:\n"
+                for fpga in pci_devices['fpgas']:
+                    host_vars_content += f'    - name: "{fpga.get("name", "")}"\n'
+                    host_vars_content += f'      model: "{fpga.get("model", "")}"\n'
         
         # Add monitoring tags
         monitoring_tags = ['fabric-node']
