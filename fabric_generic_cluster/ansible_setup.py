@@ -694,12 +694,321 @@ def deploy_ansible_inventory(slice, topology: SiteTopology) -> bool:
         print(inventory_content)
         print("=" * 70)
         
+        # Generate host_vars from topology
+        if not generate_host_vars_from_topology(fab_node, topology):
+            logger.warning("Failed to generate host variables, continuing...")
+        
         return True
         
     except Exception as e:
         logger.error(f"Failed to deploy inventory: {e}")
         print(f"❌ Failed to deploy inventory: {e}")
         return False
+
+
+
+
+def generate_host_vars_from_topology(fab_node, topology: SiteTopology) -> bool:
+    """
+    Generate host variable files from topology information on the control node.
+    
+    Creates detailed host_vars YAML files for each node based on the topology
+    model, including hardware specs, ansible roles, network info, etc.
+    
+    Args:
+        fab_node: FABRIC control node object
+        topology: Site topology model
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    logger.info("Generating host variables from topology")
+    print("\n📝 Generating host variables from topology...\n")
+    
+    # Create host_vars directory
+    fab_node.execute("mkdir -p ~/ansible/host_vars")
+    
+    generated_count = 0
+    
+    for node in topology.site_topology_nodes.iter_nodes():
+        hostname = node.hostname
+        
+        # Parse OS information
+        os_string = node.capacity.os if node.capacity.os else "unknown"
+        os_parts = os_string.replace("default_", "").split("_")
+        os_name = os_parts[0].capitalize() if os_parts else "Unknown"
+        os_version = os_parts[1] if len(os_parts) > 1 else ""
+        
+        # Parse ansible roles
+        ansible_roles = []
+        if node.specific.ansible and hasattr(node.specific.ansible, 'role') and node.specific.ansible.role:
+            ansible_roles = [r.strip() for r in node.specific.ansible.role.split(',') if r.strip()]
+        
+        # Build host_vars content
+        host_vars_content = f"""---
+# host_vars/{hostname}.yml
+# Host-specific variables for {hostname}
+# Auto-generated from topology
+
+# Host identification
+hostname: "{hostname}"
+fqdn: "{hostname}.fabric.net"
+
+# Site information
+site_name: "{node.site if node.site else 'Unknown'}"
+"""
+        
+        if node.worker:
+            host_vars_content += f'fabric_worker: "{node.worker}"\n'
+        
+        host_vars_content += f"""
+# Hardware specifications (for reference)
+cpu_cores: {node.capacity.cpu if node.capacity.cpu else 0}
+memory_gb: {node.capacity.ram if node.capacity.ram else 0}
+disk_size_gb: {node.capacity.disk if node.capacity.disk else 0}
+
+# Operating System
+os_name: "{os_name}"
+os_version: "{os_version}"
+os_full: "{os_string}"
+"""
+        
+        # Add ansible configuration
+        if node.specific.ansible:
+            host_vars_content += "\n# Ansible configuration\nansible_config:\n"
+            
+            if hasattr(node.specific.ansible, 'control') and node.specific.ansible.control:
+                is_control = node.specific.ansible.control.lower() == 'true'
+                host_vars_content += f"  is_control_node: {str(is_control).lower()}\n"
+            
+            if hasattr(node.specific.ansible, 'management_network') and node.specific.ansible.management_network:
+                host_vars_content += f'  management_network: "{node.specific.ansible.management_network}"\n'
+            
+            if ansible_roles:
+                host_vars_content += "  roles:\n"
+                for role in ansible_roles:
+                    host_vars_content += f"    - {role}\n"
+        
+        # Add SELinux configuration
+        if node.specific.selinux and hasattr(node.specific.selinux, 'mode') and node.specific.selinux.mode:
+            mode = node.specific.selinux.mode.strip()
+            if mode:
+                host_vars_content += f'\n# SELinux configuration\nselinux_target_state: "{mode}"\n'
+        
+        # Add OpenStack roles
+        if node.specific.openstack:
+            openstack_roles = {}
+            if hasattr(node.specific.openstack, 'control') and node.specific.openstack.control and node.specific.openstack.control.lower() == 'true':
+                openstack_roles['control'] = True
+            if hasattr(node.specific.openstack, 'compute') and node.specific.openstack.compute and node.specific.openstack.compute.lower() == 'true':
+                openstack_roles['compute'] = True
+            if hasattr(node.specific.openstack, 'network') and node.specific.openstack.network and node.specific.openstack.network.lower() == 'true':
+                openstack_roles['network'] = True
+            if hasattr(node.specific.openstack, 'storage') and node.specific.openstack.storage and node.specific.openstack.storage.lower() == 'true':
+                openstack_roles['storage'] = True
+            
+            if openstack_roles:
+                host_vars_content += "\n# OpenStack roles\nopenstack_roles:\n"
+                for key, value in openstack_roles.items():
+                    host_vars_content += f"  {key}: {str(value).lower()}\n"
+        
+        # Add network interfaces with full configuration
+        has_interfaces = False
+        interfaces_content = ""
+        if node.pci and node.pci.network:
+            network_interfaces = []
+            for nic_name, nic in node.pci.network.items():
+                if nic.interfaces:
+                    for iface_name, iface in nic.interfaces.items():
+                        interface_info = {
+                            'name': iface_name,
+                            'device': iface.device if iface.device else "",
+                            'connection': iface.connection if iface.connection else "",
+                            'binding': iface.binding if iface.binding else "",
+                            'nic_model': nic.model if hasattr(nic, 'model') and nic.model else "",
+                        }
+                        
+                        # Add IPv4 configuration if present
+                        if hasattr(iface, 'ipv4') and iface.ipv4:
+                            ipv4_config = {}
+                            if hasattr(iface.ipv4, 'address') and iface.ipv4.address:
+                                ipv4_config['address'] = iface.ipv4.address
+                            if hasattr(iface.ipv4, 'gateway') and iface.ipv4.gateway:
+                                ipv4_config['gateway'] = iface.ipv4.gateway
+                            if hasattr(iface.ipv4, 'dns') and iface.ipv4.dns:
+                                ipv4_config['dns'] = iface.ipv4.dns
+                            
+                            if ipv4_config:
+                                interface_info['ipv4'] = ipv4_config
+                        
+                        # Add IPv6 configuration if present
+                        if hasattr(iface, 'ipv6') and iface.ipv6:
+                            ipv6_config = {}
+                            if hasattr(iface.ipv6, 'address') and iface.ipv6.address:
+                                ipv6_config['address'] = iface.ipv6.address
+                            if hasattr(iface.ipv6, 'gateway') and iface.ipv6.gateway:
+                                ipv6_config['gateway'] = iface.ipv6.gateway
+                            if hasattr(iface.ipv6, 'dns') and iface.ipv6.dns:
+                                ipv6_config['dns'] = iface.ipv6.dns
+                            
+                            if ipv6_config:
+                                interface_info['ipv6'] = ipv6_config
+                        
+                        network_interfaces.append(interface_info)
+            
+            if network_interfaces:
+                has_interfaces = True
+                interfaces_content = "\n# Network interfaces\nnetwork_interfaces:\n"
+                for iface in network_interfaces:
+                    interfaces_content += f'  - name: "{iface["name"]}"\n'
+                    interfaces_content += f'    device: "{iface["device"]}"\n'
+                    interfaces_content += f'    connection: "{iface["connection"]}"\n'
+                    interfaces_content += f'    binding: "{iface["binding"]}"\n'
+                    if iface.get('nic_model'):
+                        interfaces_content += f'    nic_model: "{iface["nic_model"]}"\n'
+                    
+                    if 'ipv4' in iface:
+                        interfaces_content += f'    ipv4:\n'
+                        for key, value in iface['ipv4'].items():
+                            interfaces_content += f'      {key}: "{value}"\n'
+                    
+                    if 'ipv6' in iface:
+                        interfaces_content += f'    ipv6:\n'
+                        for key, value in iface['ipv6'].items():
+                            interfaces_content += f'      {key}: "{value}"\n'
+        
+        if has_interfaces:
+            host_vars_content += interfaces_content
+        
+        # Add PCI devices (GPUs, NVMe, DPU, FPGA)
+        pci_devices = {}
+        
+        # Extract GPUs
+        if node.pci and hasattr(node.pci, 'gpu') and node.pci.gpu:
+            gpus = []
+            for gpu_id, gpu in node.pci.gpu.items():
+                gpu_info = {}
+                if hasattr(gpu, 'name') and gpu.name:
+                    gpu_info['name'] = gpu.name
+                if hasattr(gpu, 'model') and gpu.model:
+                    gpu_info['model'] = gpu.model
+                if gpu_info:
+                    gpus.append(gpu_info)
+            if gpus:
+                pci_devices['gpus'] = gpus
+        
+        # Extract NVMe drives
+        if node.pci and hasattr(node.pci, 'nvme') and node.pci.nvme:
+            nvmes = []
+            for nvme_id, nvme in node.pci.nvme.items():
+                nvme_info = {}
+                if hasattr(nvme, 'name') and nvme.name:
+                    nvme_info['name'] = nvme.name
+                if hasattr(nvme, 'model') and nvme.model:
+                    nvme_info['model'] = nvme.model
+                if nvme_info:
+                    nvmes.append(nvme_info)
+            if nvmes:
+                pci_devices['nvme_drives'] = nvmes
+        
+        # Extract DPUs
+        if node.pci and hasattr(node.pci, 'dpu') and node.pci.dpu:
+            dpus = []
+            for dpu_id, dpu in node.pci.dpu.items():
+                dpu_info = {}
+                if hasattr(dpu, 'name') and dpu.name:
+                    dpu_info['name'] = dpu.name
+                if hasattr(dpu, 'model') and dpu.model:
+                    dpu_info['model'] = dpu.model
+                if dpu_info:
+                    dpus.append(dpu_info)
+            if dpus:
+                pci_devices['dpus'] = dpus
+        
+        # Extract FPGAs
+        if node.pci and hasattr(node.pci, 'fpga') and node.pci.fpga:
+            fpgas = []
+            for fpga_id, fpga in node.pci.fpga.items():
+                fpga_info = {}
+                if hasattr(fpga, 'name') and fpga.name:
+                    fpga_info['name'] = fpga.name
+                if hasattr(fpga, 'model') and fpga.model:
+                    fpga_info['model'] = fpga.model
+                if fpga_info:
+                    fpgas.append(fpga_info)
+            if fpgas:
+                pci_devices['fpgas'] = fpgas
+        
+        # Add PCI devices section to host_vars if any found
+        if pci_devices:
+            host_vars_content += "\n# PCI Devices\npci_devices:\n"
+            
+            if 'gpus' in pci_devices:
+                host_vars_content += "  gpus:\n"
+                for gpu in pci_devices['gpus']:
+                    host_vars_content += f'    - name: "{gpu.get("name", "")}"\n'
+                    host_vars_content += f'      model: "{gpu.get("model", "")}"\n'
+            
+            if 'nvme_drives' in pci_devices:
+                host_vars_content += "  nvme_drives:\n"
+                for nvme in pci_devices['nvme_drives']:
+                    host_vars_content += f'    - name: "{nvme.get("name", "")}"\n'
+                    host_vars_content += f'      model: "{nvme.get("model", "")}"\n'
+            
+            if 'dpus' in pci_devices:
+                host_vars_content += "  dpus:\n"
+                for dpu in pci_devices['dpus']:
+                    host_vars_content += f'    - name: "{dpu.get("name", "")}"\n'
+                    host_vars_content += f'      model: "{dpu.get("model", "")}"\n'
+            
+            if 'fpgas' in pci_devices:
+                host_vars_content += "  fpgas:\n"
+                for fpga in pci_devices['fpgas']:
+                    host_vars_content += f'    - name: "{fpga.get("name", "")}"\n'
+                    host_vars_content += f'      model: "{fpga.get("model", "")}"\n'
+        
+        # Add monitoring tags
+        monitoring_tags = ['fabric-node']
+        if ansible_roles:
+            monitoring_tags.extend(ansible_roles)
+        if node.site:
+            monitoring_tags.append(f"site-{node.site.lower()}")
+        
+        host_vars_content += "\n# Monitoring\nmonitoring_tags:\n"
+        for tag in monitoring_tags:
+            host_vars_content += f"  - {tag}\n"
+        
+        # Add backup and maintenance
+        host_vars_content += f"""
+# Backup configuration
+backup_enabled: true
+backup_schedule: "0 2 * * *"
+
+# Maintenance
+maintenance_window: "Sunday 02:00-04:00"
+
+# Add host-specific overrides below
+"""
+        
+        # Write to control node
+        try:
+            # Escape content for shell
+            escaped_content = host_vars_content.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$')
+            
+            fab_node.execute(f'cat > ~/ansible/host_vars/{hostname}.yml << "EOF"\n{host_vars_content}\nEOF')
+            
+            print(f"   ✓ Generated: {hostname}.yml")
+            generated_count += 1
+            
+        except Exception as e:
+            logger.error(f"Failed to write host_vars for {hostname}: {e}")
+            print(f"   ✗ Failed: {hostname}.yml - {e}")
+            return False
+    
+    print(f"\n✅ Generated {generated_count} host variable file(s)\n")
+    logger.info(f"Generated {generated_count} host variable files")
+    
+    return True
 
 
 def create_ansible_config(slice, topology: SiteTopology) -> bool:
