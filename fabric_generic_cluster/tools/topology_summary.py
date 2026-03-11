@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Union, Dict
 import yaml
 
-from .models import SiteTopology, load_topology_from_dict
+from ..models import SiteTopology, load_topology_from_dict
 
 logger = logging.getLogger(__name__)
 
