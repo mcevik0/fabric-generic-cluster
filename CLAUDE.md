@@ -6,6 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `fabric-generic-cluster` is a Python library (published on PyPI) for managing [FABRIC testbed](https://fabric-testbed.net/) slices. It provides type-safe Pydantic models for topology definitions and functions for deploying, configuring, and managing clusters on the FABRIC testbed.
 
+## Workflow
+
+All code changes must be made on a new branch, not directly on `main`. For every change:
+1. Create a new branch
+2. Make the changes and commit
+3. Push the branch and open a PR
+4. Merge the PR into `main`
+
 ## Development Setup
 
 ```bash
