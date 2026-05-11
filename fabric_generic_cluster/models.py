@@ -266,7 +266,7 @@ class Node(BaseModel):
     """Complete node configuration."""
     name: str
     hostname: str
-    site: str
+    site: str = Field(default="", description="FABRIC site for node placement; empty string lets FABLib auto-select")
     worker: Optional[str] = Field(default=None, description="Specific worker host for node placement")
     capacity: NodeCapacity
     pci: PCIDevices = Field(default_factory=PCIDevices)

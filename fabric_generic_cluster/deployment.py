@@ -712,12 +712,14 @@ def deploy_topology_to_fabric(
             # Prepare add_node arguments
             add_node_kwargs = {
                 'name': node.hostname,
-                'site': node.site,
                 'cores': node.capacity.cpu,
                 'ram': node.capacity.ram,
                 'disk': node.capacity.disk,
                 'image': node.capacity.os
             }
+
+            if node.site:
+                add_node_kwargs['site'] = node.site
             
             
             # Add worker constraint if specified
