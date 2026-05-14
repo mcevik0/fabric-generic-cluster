@@ -63,6 +63,14 @@ from .topology_viewer import (
     draw_topology_graph,
 )
 
+from .resources import (
+    get_sites_dataframe,
+    find_sites_with_resources,
+    find_hosts_with_resources,
+    validate_topology,
+    find_hosts_for_topology,
+)
+
 __all__ = [
     # Core models
     'SiteTopology',
@@ -96,4 +104,11 @@ __all__ = [
     'print_topology_summary',
     'print_compact_summary',
     'draw_topology_graph',
+
+    # Resource discovery
+    'get_sites_dataframe',
+    'find_sites_with_resources',
+    'find_hosts_with_resources',
+    'validate_topology',
+    'find_hosts_for_topology',
 ]
