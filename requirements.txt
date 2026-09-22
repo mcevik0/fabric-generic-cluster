@@ -5,7 +5,7 @@
 pydantic>=2.0.0,<3.0.0
 
 # FABRIC testbed extensions (if not already installed in JupyterHub)
-# fabrictestbed-extensions>=1.4.0
+# fabrictestbed-extensions>=1.9.0
 
 # Visualization
 matplotlib>=3.5.0

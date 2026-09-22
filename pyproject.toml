@@ -31,7 +31,7 @@ dependencies = [
     "tabulate>=0.9.0",
     "networkx>=3.0",
     "matplotlib>=3.7.0",
-    "fabrictestbed-extensions>=1.4.0",
+    "fabrictestbed-extensions>=1.9.0",
 ]
 requires-python = ">=3.9"
 

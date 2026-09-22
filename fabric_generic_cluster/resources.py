@@ -17,76 +17,157 @@ Section 12 — Topology-aware validation:
 """
 
 import uuid
+from collections.abc import Mapping
 import pandas as pd
 from typing import List
 
 # ── Site / host DataFrame helper ─────────────────────────────────────────────
 
+# Public table prefixes emitted by both 1.9.x and ResourcesV2.list_hosts().
+# The keys are the historical component names exposed by this package.
+_COMPONENT_FIELDS = {
+    'sharednic-connectx-6': 'nic_basic',
+    'smartnic-connectx-5': 'nic_connectx_5',
+    'smartnic-connectx-6': 'nic_connectx_6',
+    'smartnic-connectx-7-100': 'nic_connectx_7_100',
+    'smartnic-connectx-7-400': 'nic_connectx_7_400',
+    'gpu-rtx6000': 'rtx6000',
+    'gpu-a30': 'a30',
+    'gpu-a40': 'a40',
+    'gpu-tesla t4': 'tesla_t4',
+    'fpga-xilinx-u280': 'fpga_u280',
+    'nvme-p4510': 'nvme',
+}
+_SITE_COMPONENT_NAMES = {v: k for k, v in _COMPONENT_FIELDS.items()}
+_COMPUTE_FIELDS = ('cores', 'ram', 'disk')
+_COUNT_FIELDS = ('available', 'capacity', 'allocated')
+_SITE_COLUMNS = ['name', 'state', 'address'] + [
+    f'{resource}_{count}'
+    for resource in _COMPUTE_FIELDS
+    for count in _COUNT_FIELDS
+] + [
+    f'{component}_{count}'
+    for component in _COMPONENT_FIELDS
+    for count in ('capacity', 'allocated', 'available')
+]
+
+
+def _get_resources(fablib, force_refresh):
+    """Update the cached object as well as the service cache when requested."""
+    return fablib.get_resources(
+        update=force_refresh, force_refresh=force_refresh
+    )
+
+
+def _count(value, default=0):
+    """Handle absent/null counts without hiding invalid data."""
+    return default if value is None or pd.isna(value) else value
+
+
+def _resource_counts(data):
+    capacity = _count(data.get('capacity'))
+    allocated = _count(data.get('allocated'))
+    return {
+        'available': _count(data.get('available'), capacity - allocated),
+        'capacity': capacity,
+        'allocated': allocated,
+    }
+
+
+def _legacy_site_components(site):
+    """Read 1.9.x components through public Site/Host APIs.
+
+    Host component names retain models omitted or renamed by Site.to_dict().
+    P4 switches are not hosts, so their counts come from public serialization.
+    """
+    names = {
+        name
+        for host in site.get_hosts().values()
+        for name in (host.get_components() or {})
+    }
+    components = {
+        name: {
+            'capacity': site.get_component_capacity(name),
+            'allocated': site.get_component_allocated(name),
+        }
+        for name in names
+    }
+    serialized = site.to_dict()
+    p4_counts = {
+        count: serialized.get(f'p4-switch_{count}')
+        for count in ('capacity', 'allocated')
+    }
+    if any(_count(value) for value in p4_counts.values()):
+        components['P4-Switch'] = p4_counts
+    return components
+
+
+def _site_record(site_name, site):
+    """Read a 1.9.x Site or a 2.x summary into the historical site schema."""
+    if isinstance(site, Mapping):
+        record = {
+            'name': site_name,
+            'state': site.get('state'),
+            'address': site.get('address'),
+        }
+        for resource in _COMPUTE_FIELDS:
+            counts = _resource_counts({
+                count: site.get(f'{resource}_{count}')
+                for count in _COUNT_FIELDS
+            })
+            record.update({f'{resource}_{k}': v for k, v in counts.items()})
+        components = site.get('components')
+    else:
+        record = {
+            'name': site_name,
+            'state': site.get_state(),
+            'address': site.get_location_postal(),
+        }
+        for resource in _COMPUTE_FIELDS:
+            getter = 'core' if resource == 'cores' else resource
+            counts = _resource_counts({
+                count: getattr(site, f'get_{getter}_{count}')()
+                for count in _COUNT_FIELDS
+            })
+            record.update({f'{resource}_{k}': v for k, v in counts.items()})
+        components = _legacy_site_components(site)
+
+    if components is not None:
+        for component, data in components.items():
+            # A null component represents absent hardware in a summary.
+            if data is None:
+                continue
+            name = component.lower()
+            name = _SITE_COMPONENT_NAMES.get(name, name)
+            if name in _COMPUTE_FIELDS:
+                continue
+            counts = _resource_counts(data)
+            record.update({f'{name}_{k}': v for k, v in counts.items()})
+    return record
+
+
 def get_sites_dataframe(fablib, force_refresh=False):
-    """
-    Get all FABRIC sites with their resources as a DataFrame.
-    
-    Args:
-        fablib: FablibManager instance
-        
-    Returns:
-        pandas.DataFrame with site information and resources
-    """
-    resources = fablib.get_resources(force_refresh=force_refresh)
-    sites_list = []
+    """Get sites with stable, legacy-compatible resource column names.
 
-    for site_name in resources.sites:
-        site = resources.sites[site_name]
-        
-        # Build site dictionary
-        site_dict = {'name': site_name}
-        
-        # Basic attributes
-        try:
-            site_dict['state'] = site.get_state()
-        except:
-            site_dict['state'] = None
-        
-        # Get location info
-        try:
-            location = site.get_location_postal()
-            site_dict['address'] = location
-        except:
-            site_dict['address'] = None
-        
-        # Get basic resources
-        try:
-            site_dict['cores_available'] = site.get_core_available()
-            site_dict['cores_capacity'] = site.get_core_capacity()
-            site_dict['cores_allocated'] = site.get_core_allocated()
-            
-            site_dict['ram_available'] = site.get_ram_available()
-            site_dict['ram_capacity'] = site.get_ram_capacity()
-            site_dict['ram_allocated'] = site.get_ram_allocated()
-            
-            site_dict['disk_available'] = site.get_disk_available()
-            site_dict['disk_capacity'] = site.get_disk_capacity()
-            site_dict['disk_allocated'] = site.get_disk_allocated()
-        except:
-            pass
-        
-        # Get component info from site_info (NICs, GPUs, FPGAs, NVMe, etc.)
-        try:
-            site_info = site.site_info
-            for component_name, component_data in site_info.items():
-                if isinstance(component_data, dict) and 'capacity' in component_data:
-                    # Create columns for each component
-                    site_dict[f'{component_name}_capacity'] = component_data.get('capacity', 0)
-                    site_dict[f'{component_name}_allocated'] = component_data.get('allocated', 0)
-                    site_dict[f'{component_name}_available'] = (
-                        component_data.get('capacity', 0) - component_data.get('allocated', 0)
-                    )
-        except Exception as e:
-            pass
-        
-        sites_list.append(site_dict)
+    Supports 1.9.x Site objects and ResourcesV2 dictionaries. Known hardware
+    columns are present even for empty results or sites without that hardware;
+    additional advertised component names are retained in lowercase.
+    """
+    resources = _get_resources(fablib, force_refresh)
+    records = []
+    for site_name in resources.get_site_names():
+        site = resources.get_site(site_name)
+        if site is not None:
+            records.append(_site_record(site_name, site))
 
-    return pd.DataFrame(sites_list)
+    extra_columns = sorted({
+        column for record in records for column in record
+    } - set(_SITE_COLUMNS))
+    columns = _SITE_COLUMNS + extra_columns
+    frame = pd.DataFrame(records, columns=columns)
+    resource_columns = columns[3:]
+    frame[resource_columns] = frame[resource_columns].fillna(0)
+    return frame
 
 # ── Shared resource field map (Section 11) ───────────────────────────────────
 
@@ -96,7 +177,7 @@ def get_sites_dataframe(fablib, force_refresh=False):
 #   (param_name, display_label, site_field, host_field)
 #
 # site_field  : column name produced by get_sites_dataframe()
-# host_field  : field name used by fablib.list_hosts()
+# host_field  : normalized field name returned by _get_hosts()
 #
 # NOTE: GPU names differ between the two levels — the map makes that explicit.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,6 +202,35 @@ _RESOURCE_FIELD_MAP = [
 
 # Quick lookup: param_name -> (label, site_field, host_field)
 _FIELD_LOOKUP = {p: (lbl, sf, hf) for p, lbl, sf, hf in _RESOURCE_FIELD_MAP}
+
+
+def _normalize_host(host):
+    """Add historical host names before filtering; retain upstream fields."""
+    record = dict(host)
+    for _param, _label, site_field, host_field in _RESOURCE_FIELD_MAP:
+        prefix = host_field.removesuffix('_available')
+        site_prefix = site_field.removesuffix('_available')
+        source = _COMPONENT_FIELDS.get(site_prefix, prefix)
+        counts = _resource_counts({
+            count: _count(
+                host.get(f'{prefix}_{count}'),
+                host.get(f'{source}_{count}'),
+            )
+            for count in _COUNT_FIELDS
+        })
+        record.update({f'{prefix}_{k}': v for k, v in counts.items()})
+    return record
+
+
+def _get_hosts(fablib, force_refresh=False):
+    """Refresh once per host query, preserving FABlib 1.9.x list_hosts()."""
+    resources = fablib.get_resources(
+        update=True, force_refresh=force_refresh
+    )
+    hosts = resources.list_hosts(
+        pretty_names=False, output='list', quiet=True
+    )
+    return [_normalize_host(host) for host in hosts]
 
 
 def _print_criteria(level, criteria):
@@ -181,17 +291,10 @@ def find_sites_with_resources(
 
     sites_df = get_sites_dataframe(fablib, force_refresh=force_refresh)
 
-    def safe_get(row, col, default=0):
-        val = row.get(col, default)
-        return default if pd.isna(val) else val
-
-    def filter_func(row):
-        return all(
-            safe_get(row, site_field) >= criteria[param]
-            for param, (_, site_field, _hf) in _FIELD_LOOKUP.items()
-        )
-
-    result_df = sites_df[sites_df.apply(filter_func, axis=1)]
+    mask = pd.Series(True, index=sites_df.index, dtype=bool)
+    for param, (_label, site_field, _hf) in _FIELD_LOOKUP.items():
+        mask &= sites_df[site_field] >= criteria[param]
+    result_df = sites_df.loc[mask]
 
     # Build display columns: always show name + state, then requested resources
     display_cols = ['name', 'state'] + [
@@ -259,13 +362,6 @@ def find_hosts_with_resources(
     if verbose:
         _print_criteria('hosts', criteria)
 
-    # Always fetch name + state + compute; add requested resource fields
-    host_fields = ['name', 'state', 'cores_available', 'ram_available', 'disk_available'] + [
-        host_field
-        for param, (_, _sf, host_field) in _FIELD_LOOKUP.items()
-        if criteria[param] and host_field not in ('cores_available', 'ram_available', 'disk_available')
-    ]
-
     def host_filter(row):
         return all(
             row.get(host_field, 0) >= criteria[param]
@@ -273,14 +369,10 @@ def find_hosts_with_resources(
         )
 
     try:
-        matching_hosts = fablib.list_hosts(
-            fields=host_fields,
-            pretty_names=False,
-            filter_function=host_filter,
-            output='list',
-            quiet=True,
-            force_refresh=force_refresh
-        )
+        matching_hosts = [
+            host for host in _get_hosts(fablib, force_refresh=force_refresh)
+            if host_filter(host)
+        ]
     except Exception as e:
         print(f"\u274c Error querying hosts: {e}")
         return []
@@ -510,7 +602,7 @@ def find_hosts_for_topology(
     """
     Find candidate worker hosts for each node in a topology.
 
-    Calls fablib.list_hosts() per topology node and lists every worker host
+    Reads one resource snapshot and lists every worker host
     that individually satisfies the node's resource requirements.
     All candidates are shown — no random selection.
 
@@ -545,16 +637,12 @@ def find_hosts_for_topology(
     print(f'📊 Topology: {len(topology_nodes)} node(s)\n')
     print('🔍 Finding candidate worker hosts per node...\n')
 
-    host_fields = [
-        'name', 'state',
-        'cores_available', 'ram_available', 'disk_available',
-        'rtx6000_available', 'tesla_t4_available', 'a30_available', 'a40_available',
-        'nvme-p4510_available',
-        'smartnic-connectx-5_available', 'smartnic-connectx-6_available',
-        'smartnic-connectx-7-100_available', 'smartnic-connectx-7-400_available',
-        'sharednic-connectx-6_available',
-        'fpga-xilinx-u280_available',
-    ]
+    hosts = []
+    if topology_nodes:
+        try:
+            hosts = _get_hosts(fablib, force_refresh=force_refresh)
+        except Exception as e:
+            print(f'    ❌ list_hosts error: {e}')
 
     all_matches = []
 
@@ -565,14 +653,10 @@ def find_hosts_for_topology(
         print(f'  Node {idx}/{len(topology_nodes)}: {node.hostname}')
 
         try:
-            candidates = fablib.list_hosts(
-                fields=host_fields,
-                pretty_names=False,
-                filter_function=_make_host_filter(node_site, req, sites_prefer, sites_avoid),
-                output='list',
-                quiet=True,
-                force_refresh=force_refresh,
+            host_filter = _make_host_filter(
+                node_site, req, sites_prefer, sites_avoid
             )
+            candidates = [host for host in hosts if host_filter(host)]
         except Exception as e:
             print(f'    ❌ list_hosts error: {e}')
             candidates = []
