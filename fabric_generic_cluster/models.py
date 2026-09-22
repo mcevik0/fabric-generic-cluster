@@ -5,7 +5,7 @@ Provides type-safe access to topology data with automatic validation.
 """
 
 from typing import Dict, Optional, Any, List
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import ipaddress
 
 
@@ -19,7 +19,8 @@ class IPv4Config(BaseModel):
     gateway: str = ""
     dns: str = ""
     
-    @validator('address')
+    @field_validator("address", mode="after")
+    @classmethod
     def validate_ipv4_address(cls, v):
         """Validate IPv4 address format (CIDR notation) if provided."""
         if v and v.strip():
@@ -36,7 +37,8 @@ class IPv6Config(BaseModel):
     gateway: str = ""
     dns: str = ""
     
-    @validator('address')
+    @field_validator("address", mode="after")
+    @classmethod
     def validate_ipv6_address(cls, v):
         """Validate IPv6 address format (CIDR notation) if provided."""
         if v and v.strip():
@@ -171,7 +173,8 @@ class OpenStackRoles(BaseModel):
     compute: str = "false"
     storage: str = "false"
     
-    @validator('control', 'network', 'compute', 'storage')
+    @field_validator("control", "network", "compute", "storage", mode="after")
+    @classmethod
     def validate_boolean_string(cls, v):
         """Ensure values are 'true' or 'false' strings."""
         if v not in ["true", "false"]:
@@ -379,7 +382,8 @@ class FacilityPort(BaseModel):
     vlan: int = Field(description="VLAN ID for the facility port")
     binding: str = Field(description="Network name this facility port connects to")
     
-    @validator('vlan')
+    @field_validator("vlan", mode="after")
+    @classmethod
     def validate_vlan(cls, v):
         """Validate VLAN is in valid range."""
         if not (1 <= v <= 4094):
@@ -435,7 +439,8 @@ class Network(BaseModel):
     # Legacy fields for backward compatibility
     gateway: Optional[str] = Field(default=None, deprecated=True)
     
-    @validator('type')
+    @field_validator("type", mode="after")
+    @classmethod
     def validate_network_type(cls, v):
         """Validate network type."""
         valid_types = ["L2Bridge", "L2PTP", "L2STS", "IPv4", "IPv6", "IPv4Ext", "IPv6Ext"]
