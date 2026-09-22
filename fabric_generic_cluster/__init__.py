@@ -5,7 +5,8 @@ A comprehensive, type-safe Python framework for managing FABRIC testbed
 generic clusters and slices with support for DPUs, FPGAs, and advanced networking.
 """
 
-__version__ = "1.0.18"
+from importlib import metadata as _metadata
+
 __author__ = "Mert Cevik"
 __email__ = "mcevik@renci.org"
 
@@ -70,6 +71,11 @@ from .resources import (
     validate_topology,
     find_hosts_for_topology,
 )
+
+try:
+    __version__ = _metadata.version("fabric-generic-cluster")
+except _metadata.PackageNotFoundError:
+    __version__ = "0+unknown"
 
 __all__ = [
     # Core models
