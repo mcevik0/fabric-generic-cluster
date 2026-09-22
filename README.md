@@ -60,7 +60,7 @@ pip install -e .
 
 - Python 3.9 or higher
 - Access to FABRIC testbed
-- `fabrictestbed-extensions>=1.4.0` (installed automatically)
+- `fabrictestbed-extensions>=1.9.0` (installed automatically)
 
 ### Verify Installation
 
