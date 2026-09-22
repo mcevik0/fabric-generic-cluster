@@ -411,6 +411,15 @@ python tests/test-dpu-support.py
 python tests/test-fpga-support.py
 ```
 
+### Package Version
+
+The `[project].version` field in `pyproject.toml` is the version source of truth.
+`fabric_generic_cluster.__version__` reads the installed distribution metadata
+and falls back to `"0+unknown"` in an uninstalled source checkout when metadata
+is unavailable. After changing the project version for a release, editable
+installs may need their metadata refreshed by reinstalling with
+`pip install -e ".[dev]"`.
+
 ### Building the Package
 
 ```bash
